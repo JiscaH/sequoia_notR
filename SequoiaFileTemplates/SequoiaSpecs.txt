@@ -1,0 +1,25 @@
+Genofile	,	Geno.txt
+LHfile	,	LifeHist.txt
+nIndLH	,	1000
+NumberIndivGenotyped	,	214
+NumberSnps	,	200
+GenotypingErrorRate	,	0.005
+MaxMismatchDUP	,	11
+MaxMismatchOH	,	4
+MaxMismatchME	,	7
+Tfilter	,	-2
+Tassign	,	0.5
+nAgeClasses	,	4
+MaxSibshipSize	,	100
+MaxSibIter	,	42
+DummyPrefixFemale	,	F
+DummyPrefixMale	,	M
+Complexity	,	2
+Herm	,	0
+UseAge	,	1
+FindMaybeRel	,	0
+CalcLLR	,	1
+ErrFlavour	,	version2.0
+SequoiaVersion	,	2.3.0
+TimeStart	,	2021-03-27 09:50:05
+TimeEnd	,	2021-03-27 09:50:06

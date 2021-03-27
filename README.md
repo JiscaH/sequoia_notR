@@ -16,13 +16,13 @@ library(sequoia)
 data(SimGeno_example, LH_HSg5)
 SeqOUT <- sequoia(SimGeno_example, LH_HSg5, Err = 0.005, Module = "pre")
 writeSeq(SeqList = SeqOUT, GenoM = SimGeno_example, 
-         folder = "SequoiaTemplatesFolder")
+         folder = "SequoiaFileTemplates")
 ```
 
 ## Running
 Parameter values are stored in `SequoiaSpecs.txt`. Many of these can be overruled on the command line, as described in the PDF manual. 
 ```
-./sequoia --geno GriffinGenotypes --par --ped --verbose
+./sequoia --geno geno.txt --par --ped --verbose
 ```
 
 
