@@ -23,7 +23,7 @@ integer :: nInd, nSnp, nIndLH, maxSibSize, MaxOppHom, MaxMendelE, Hermaphrodites
  nC(2), nYears, maxAgePO, nPairs, Complx, quiet, AgePhase, BYzero, ID_len
 integer, parameter :: mxA=2**6, & ! max no. ancestors considered when testing for pedigree loop
    mxCP = 50, &  ! max no. candidate parents per sex
-   MaxMaxAgePO = 100, &  ! maximum of MaxAgePO
+   MaxMaxAgePO = 101, &  ! maximum of MaxAgePO
    nchar_filename = 2000, &
    nchar_ID = 40, &     ! max. ID nchar 
    XP = 5  ! multiplier nInd --> max no. candidate sib pairs 
@@ -2580,7 +2580,7 @@ if (ALL(nCP==0))  return
 
 DoLog = .FALSE.
 if (A > 0) then
-!  if (A==685 .or. A==1069 .or. A==1140)   DoLog = .TRUE.
+  if (A==42)   DoLog = .TRUE.
 else if (A < 0) then
 !  if (any(SibID(:,-A, kAIN) == 1460))  DoLog = .TRUE.
 endif
@@ -9868,7 +9868,7 @@ do x=1,4
   endif
 enddo
 
-! if ((A==994 .and. any(SibID(:,SB,k)==995))) then
+! if ((A==42 .and. any(SibID(:,SB,k)==142))) then
  ! open (unit=42,file="log.txt",status="unknown", position="append")
   ! write (42, *) ""
     ! write (42, '("add?", 3i6, " + ", 2i6, " GPs: ", 2i6)') A, Parent(A,:), SB, k, GpID(:,SB,k)
@@ -9880,7 +9880,7 @@ enddo
     ! write (42, '("LLZ ", 6f8.1)') LLz
     ! write (42, '("ALRz: ", 6f8.1, ", ALRq: ", f8.1)')  ALRz, ALRq
     ! write (42, '("LLU ", f9.2, "; ", 3f9.2)') LLg(7), Lind(A) + CLL(SB,k), Lind(A), CLL(SB,k) 
-    ! write (42, '("LLM ", 3i5, "; ", 3f8.1, ", LLPX: ", 4f8.1)') &
+    ! write (42, '("LLM ", 3L2, "; ", 3f8.1, ", LLPX: ", 4f8.1)') &
      ! MaybeOpp, FSpar, fsi, LLM, LLPX(1,:), LLPX(2,:)
      ! if (ANY(LLP<missing))  write (42, '("LLP ", 7f8.1)') LLp
     ! write (42, '("LLHH: ", 4f8.1, " ; ", 4f8.1)')  LLHH(:,1), LLHH(:,2)
@@ -15759,7 +15759,7 @@ do j = 2, mxA/2
   if (j==2 .and. ALL(Anc(:, 3:4) == 0))  return
   if (j==4 .and. ALL(Anc(:, 5:8) == 0))  return
   if (j==8 .and. ALL(Anc(:, 9:16) == 0))  return
-  if (j==10 .and. ALL(Anc(:, 17:32) == 0))  return
+  if (j==16 .and. ALL(Anc(:, 17:32) == 0))  return
 enddo
 
 if ((A>0 .and. ANY(Anc(:, 2:mxA)==A)) .or. (A<0 .and. ANY(Anc(k,3:mxA)==A))) then
@@ -17013,7 +17013,7 @@ numcol = FileNumCol(trim(AgePriorFileName))   ! default: "AgePriors.txt"
 if (numcol/=8 .and. numcol/=9 .and. numcol/=5) then
   call Erstop("Invalid number of columns in "//trim(AgePriorFileName), .FALSE.)
 endif
-numrow = FileNumRow(trim(AgePriorFileName)) 
+numrow = FileNumRow(trim(AgePriorFileName)) -1  ! header row
 if (numrow > MaxMaxAgePO) then
   call ErStop("Max parent age >99: increase 'MaxMaxAgePO' on line 26 of source code", .TRUE.)
 endif
@@ -17091,7 +17091,7 @@ if (BYzero < 99999) then
 else   ! all birth years unknown
   BYzero = 0
   nYears = MaxMaxAgePO
-  MaxAgePO = MaxMaxAgePO/2
+  MaxAgePO = INT( MaxMaxAgePO/2.0 )
 endif
 
 !===  initiate AgePrior array  ==============
