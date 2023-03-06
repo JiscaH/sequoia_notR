@@ -25,7 +25,7 @@ implicit none
 
 integer :: nInd, nSnp, nIndLH, maxSibSize, MaxOppHom, MaxMendelE, Hermaphrodites, &
  nC(2), nYears, maxAgePO, nPairs, Complx, quiet, AgePhase, BYzero, ID_len
-integer, parameter :: mxA=2**5, & ! max no. ancestors considered when testing for pedigree loop
+integer, parameter :: mxA=2**6, & ! max no. ancestors considered when testing for pedigree loop
    mxCP = 50, &  ! max no. candidate parents per sex
    MaxMaxAgePO = 101, &  ! maximum of MaxAgePO
    nchar_filename = 2000, &
@@ -1621,7 +1621,7 @@ double precision, intent(INOUT) :: TotLL(42)
 integer :: i, j, k, Round, isP(2), PriorPed(nInd, 2), BYRank(nInd), BYRank_Selfed(nInd), &
   NoPed(nInd,2)
 double precision :: SortBY(nInd)
-character(len=2) :: RoundC
+!character(len=2) :: RoundC
  
 call rchkusr()     
  
@@ -1828,6 +1828,7 @@ do Round=1, MaxRounds
     call GGpairs
     call UpdateAllProbs()
   endif
+  
   CurLL(3) = SUM(Lind)
   call cpu_time(CurTime(3))
   if (Round > RX+1) then
@@ -1853,7 +1854,7 @@ do Round=1, MaxRounds
   if (Round > RX .or. Round==MaxRounds) then  
     if(quiet==-1)  call Rprint("Sibship grandparents ...", (/0/), (/0.0D0/), "NON")
     call SibGrandparents
-    call UpdateAllProbs()   
+    call UpdateAllProbs()  
     do k=1,2
       IsNewSibship(1:nC(k), k) = .FALSE.
     enddo  
@@ -2482,7 +2483,6 @@ integer, intent(IN) :: BYrank(nInd), PriorPed(nInd, 2)
 integer :: i, j, x, y, k, CandPar(mxCP, 2), nCP(2), curPar(2), SexTmp(2)
 logical :: ParOK
 
-
 do x=1, nInd
   if (MOD(x,200)==0) call rchkusr()   
   i = BYRank(x)
@@ -2608,10 +2608,10 @@ if (ALL(nCP==0))  return
 DoLog = .FALSE.
 if (A > 0) then
   fcl = 1
-!  if (A==189 .or. A==759)   DoLog = .TRUE.
+!  if (A==29)   DoLog = .TRUE.
 else !if (A < 0) then
   fcl = 4
-!  if (any(SibID(:,-A, kAIN) == 1460))  DoLog = .TRUE.
+!  if (any(SibID(:,-A, kAIN) == 439) .and. kAIN==1)  DoLog = .TRUE.
 endif
 logfile = "log.txt"
 
@@ -3194,7 +3194,7 @@ if (COUNT(SingleCand) == 1) then
   endif
 else
   do m=1,2
-    call setParTmp(A,kA, 0,m)   ! do no funny bussiness w temp assigned ex-parents
+    call setParTmp(A,kA, 0,m)   ! do no funny bussiness w temp assigned ex-cand-parents
   enddo
   do m=1,2
     call setPar(A,kA, 0,m)
@@ -3553,7 +3553,7 @@ else
 endif
 
 
-! if (A==189 .or. A==759) then
+! if (A==-9 .and. kA==2) then
   ! open (unit=69,file="log-CalcCPL.txt",status="unknown", position="append")
    ! write(69,*) ""
    ! write(69,*)  "A: ", A, kA, " (", curPar, ")   B: ", B, kB
@@ -3688,9 +3688,9 @@ if (ParOK) then
     call setParTmp(candP, kP, A, kA)
     call CalcU(candP, kP, parCP(3-kA),3-kA, LLtmp(2))
     LLrev(fcl,1) = LLrev(fcl,1) + (LLtmp(2) - LLtmp(1))
-    call setParTmp(candP, kP, parCP(kA), kA)
   endif
 endif
+call setParTmp(candP, kP, parCP(kA), kA)
 
 LLrevX = missing
 if (SexUnk .and. ParOK) then  ! also consider as parent of other sex
@@ -4263,6 +4263,7 @@ endif
 LLZ = missing
 LLC = missing   
 LLHH = missing 
+LLX = missing             
 if (Complx==2 .and. LL(2)<0 .and. .not. (SelfedIndiv(A) .or. SelfedIndiv(B))) then    
   if (LL(2) - LL(7) > TA) then  ! check if inbred FS (& boost LL) 
     call PairFSHA(A, B, k, LLZ(1))
@@ -4405,7 +4406,7 @@ if (focal==1 .and. LL(5) < LL(7)) then  ! check if FS of other parent
 endif
 
 
-! if ((A==189 .and. B==759) .or. (A==759 .and. B==189)) then
+! if ((A==59 .and. B==13) .or. (A==59 .and. B==14)) then
 ! !if (A>643 .and. A<651 .and. B>643 .and. B<651) then
   ! open (unit=42,file="log.txt",status="unknown", position="append")
     ! write (42, *) ""
@@ -8260,14 +8261,7 @@ do k=1,2
 
       if (Complx==0) then  ! ensure monogamous
         Par = 0       
-        call getFSpar(s, k, .FALSE., Par)
-        
-        ! if (s==31 .and. k==1) then
-          ! print *, "Bleep!", i, Mate(i), Par
-          ! if (Mate(i) < 0)  print *, "Mate: ", SibID(1:5, -Mate(i), 3-k)
-          ! if (Par < 0)  print *, "Par: ", SibID(1:5, -par, 3-k)
-        ! endif
-        
+        call getFSpar(s, k, .FALSE., Par)      
         if (Mate(i)/=Par .and. Mate(i)/=0 .and. Par/=0) then
           LLtmp = missing
           if (Mate(i)<0 .and. Par<0) then
@@ -8287,8 +8281,6 @@ do k=1,2
         CandPar(nCandPar) = i
       endif
     enddo  ! i  
-    
-    ! if (s==31 .and. k==1) print *, "candpar: ", CandPar(1:nCandPar)
     
     if (nCandPar == 1) then
       Par = 0       
@@ -8448,7 +8440,7 @@ do x=1, nInd
     do s=1, nC(k)
       if (nCP(k) == mxCP)  exit
       if (ANY(CandPar(:,k) == -s))  cycle    
-      if (ANY(GpID(:,s,k)==i)) cycle    
+      if (ANY(GpID(:,s,k)==i)) cycle   
       call ChkAncest(-s, k, i, sex(i), AncOK)
       if (.not. AncOK)  cycle
       call CalcAgeLR(i,0,-s,k,0,1, .TRUE.,ALR(1))
@@ -8474,7 +8466,7 @@ do x=1, nInd
         call BestRel(LLtmp(:,2), 3, topTmp, dLL)
         if (topTmp /= 3)  cycle
       endif
-      
+            
       nCP(k) = nCP(k) +1
       CandPar(nCP(k), k) = -s
       if (Complx==0 .and. nCP(3-k)<mxCP) then
@@ -8732,6 +8724,7 @@ do x=1, MAXVAL(nC)
       endif
       call setParTmp(-s, k, 0, m)
     enddo
+    call setEstBY(-s,k)
     
     do i=1,nInd
       if (Parent(i,k)==-s) cycle
@@ -8779,9 +8772,10 @@ do x=1, MAXVAL(nC)
       do r=1, nC(m) 
         if (ncG(m) == mxCP) exit
         if (m==k .and. s==r) cycle
+        if (k==1 .and. s==7 .and. m==1 .and. any(sibID(:,r,m)==241))  print *, 'bleep', m, r
         if (any(CandGP(:,m) == -r)) cycle  ! current GP
         call ChkAncest(-r,m, -s,k, AncOK)
-!        if (k==2 .and. s==3 .and. r==8)  print *, "AncOK: ", AncOK
+        if (k==1 .and. s==7 .and. m==1 .and. any(sibID(:,r,m)==241))  print *, "AncOK: ", AncOK
         if (.not. AncOK)  cycle
         if (nS(r,m)==1 .and. ANY(SibID(1:nS(s,k),s,k) == SibID(1,r,m))) cycle
         if (m/=k .and. complx<2) then
@@ -8789,27 +8783,27 @@ do x=1, MAXVAL(nC)
           if (ALL(Parent(SibID(1:ns(r,m),r,m),k) == -s))  cycle
         endif
         call CalcAgeLR(-s,k, -r,m, 0,1, .TRUE., ALRtmp(1))
-!        if (k==2 .and. s==3 .and. r==8)  print *, "ALR-1: ", ALRtmp(1)
+        if (k==1 .and. s==7 .and. m==1 .and. any(sibID(:,r,m)==241))  print *, "ALR-1: ", ALRtmp(1)
         if (ALRtmp(1) == impossible .or. ALRtmp(1) < 2.0*TF) cycle
         call CalcAgeLR(-r,m, -s,k, 0,1, .TRUE., ALRtmp(2))
-!        if (k==2 .and. s==3 .and. r==8)  print *, "ALR-2: ", ALRtmp(2)
+        if (k==1 .and. s==7 .and. m==1 .and. any(sibID(:,r,m)==241))  print *, "ALR-2: ", ALRtmp(2)
         if (ALRtmp(2)/=impossible .and. (ALRtmp(1)-ALRtmp(2)) < TF)  cycle 
         if (ALL(ABS(ALRtmp) < 0.001))  cycle  ! no age info
         if (hermaphrodites==0) then
           call QGP(-r, m, s, k,  LRG) 
-!        if (k==2 .and. s==3 .and. r==8)  print *, "QGP: ", LRG
+!        if (k==1 .and. s==7 .and. m==1 .and. any(sibID(:,r,m)==241))  print *, "QGP: ", LRG
           if (LRG < TF*dble(MIN(nS(s,k), nS(r,m)))) cycle  ! conservative.
         endif
 
         LLX = missing
         call PairUA(-s, -r, k, m, LLX(1,1))
-!        if (k==2 .and. s==3 .and. r==8)  print *, "LLX 1-1", LLX(1,1)
+!        if (k==1 .and. s==7 .and. m==1 .and. any(sibID(:,r,m)==241))  print *, "LLX 1-1", LLX(1,1)
         if (LLX(1,1)>0) cycle
         call CalcU(-s,k, -r,m, LLX(1,2)) 
-!        if (k==2 .and. s==3 .and. r==8)  print *, "LLX 1-2", LLX(1,2)
+!        if (k==1 .and. s==7 .and. m==1 .and. any(sibID(:,r,m)==241))  print *, "LLX 1-2", LLX(1,2)
         if ((LLX(1,1) - LLX(1,2)) < nS(s,k)*TF) cycle
         call addFS(0, r, m, s, k, LLX(2,1), ix, dx) 
-!        if (k==2 .and. s==3 .and. r==8)  print *, "LLX 2-1", LLX(2,1)
+!        if (k==1 .and. s==7 .and. m==1 .and. any(sibID(:,r,m)==241))  print *, "LLX 2-1", LLX(2,1)
         if ((MaxLL(LLX(:,1)) - LLX(1,2)) < TA)  cycle
         if (ncG(m) < mxCP) then
           nCG(m) = nCG(m) + 1
@@ -8823,6 +8817,7 @@ do x=1, MAXVAL(nC)
       do m=1,2
         call setParTmp(-s, k, curGP(m), m)  
       enddo
+      call setEstBY(-s,k)
       cycle
     endif 
 
@@ -9942,7 +9937,7 @@ do x=1,4
   endif
 enddo
 
-! if ((A==1627 .and. any(SibID(:,SB,k)==1270))) then
+! if ((A==29 .and. any(SibID(:,SB,k)==31))) then
  ! open (unit=42,file="log.txt",status="unknown", position="append")
   ! write (42, *) ""
     ! write (42, '("add?", 3i6, " + ", 2i6, " GPs: ", 2i6)') A, Parent(A,:), SB, k, GpID(:,SB,k)
@@ -12644,7 +12639,7 @@ integer, intent(IN) :: A, SB, kB, SA, kAx
 integer, intent(OUT) :: TopSib    ! most likely FS of A within SB
 double precision, intent(OUT) :: LL, dLL(maxSibSize)  ! dLL
 integer :: PA, kA, AncA(2,mxA), GA(2), InbrX, Par(nS(SB,kB)), MaybeFS(nS(SB,kB)), &
-  f, i, Bj, Inbr(nS(SB,kB)),  GB(ns(SB,kB), 2), DoQuick, l,x,y,g,h,Ei,z,j,Rj                        
+  f, i, Bj, Inbr(nS(SB,kB)),  GB(ns(SB,kB), 2), DoQuick, l,x,y,g,h,Ei,z,j,Rj, ParAtmp                       
 double precision :: ALR, LRQ, LLtmp(2), LLUX, PrL(nSnp, nS(SB,kB),2), PrXY(3,3,2), &
   PrG(3), PrX(3,2), PrY(3,2), PrW(3), PrZ(3), PrV(3) 
 logical :: ParOK, ParBisClone(ns(SB,kB))
@@ -12657,6 +12652,7 @@ if (nS(SB,kB)==0) then
   LL = impossible
   return   ! nobody to be FS with
 endif
+
 PA = 0
 if (A /= 0) then
   if (kAx==1 .or. kAx==2) then
@@ -12839,10 +12835,10 @@ endif
 
 if (A/=0 .and. nYears>1) then    ! check if A is more likely to be parent of sib instead
   do f=1, nS(SB,kB)
-    if (MaybeFS(f)<1 .or. Par(f)/=0 .or. Parent(SibID(f, SB, kB), 3-kB)/=0) cycle  
-    if (AgeDiff(SibID(f, SB, kB), A) <= 0) cycle
-    if (Sex(A)<3 .and. Sex(A)/=3-kB)  cycle  ! TODO check both sexes?
     Bj = SibID(f, SB, kB)
+    if (MaybeFS(f)<1 .or. Par(f)/=0 .or. Parent(Bj, 3-kB)/=0) cycle  
+    if (AgeDiff(Bj, A) <= 0) cycle
+    if (Sex(A)<3 .and. Sex(A)/=3-kB)  cycle  ! TODO check both sexes?
     call ChkValidPar(Bj, 3, A, 3-kB, ParOK)
     if (.not. ParOK)  cycle
     call CalcU(-SB, kB, A, kB, LLtmp(1))
@@ -12869,13 +12865,14 @@ if (A>0 .and. PA/=0 .and. any(Parent(SibID(1:ns(SB,kB),SB,kB),3-kB)==PA) .and. &
   else
     LLtmp(1) = LLUX
   endif
+  ParAtmp = Parent(A,kB)   ! 0 or -SB
   call setParTmp(A, sex(A), -SB, kB)
   if (Parent(A,3-kB) < 0) then
     call CalcU(-SB, kB, Parent(A,3-kB), 3-kB, LLtmp(2))
   else
     LLtmp(2) = CLL(SB,kB)
   endif
-  call setParTmp(A, sex(A), 0, kB)  
+  call setParTmp(A, sex(A), ParAtmp, kB)  
   call CalcCLL(SB,kB)
   LL = LLUX + LLtmp(2) - LLtmp(1)
    
@@ -14493,6 +14490,11 @@ double precision, intent(OUT) :: LL
 integer :: i, r, AncB(2,mxA), m, DoQuickA, DoQuickB, l, x, y, z, u,v, Ai
 double precision :: PrL(nSnp), PrGG(3,2), PrGA(3), PrXY(3,3,3,3,3), PrA(3), PrPA(3)
 
+if (nS(SA,kA)==0 .or. ns(SB,kB)==0) then
+  LL = NotImplemented
+  return
+endif
+
 LL = missing
 do i=1, nS(SB,kB)
   if (kA /= kB) then
@@ -14582,13 +14584,13 @@ end subroutine dummyHFA
 subroutine getEstBY(A, kA, lvl, BYLR)
 use Global
 implicit none
-
 ! lvl: 1=own; 2=own + est. from relatives exact BY + parent yearlast; 
 ! 3= 2 + est. BY from par + GP, 4= 2 + est. BY from offspr, 5 = all (NOT est BY from sibs)
 
 integer, intent(IN) :: A, kA, lvl
 double precision, intent(OUT) :: BYLR(nYears)
 
+BYLR = LOG10(zero)
 if (A > 0) then
   BYLR = IndBY(:, A, lvl)
 else if (A < 0) then
@@ -14625,7 +14627,8 @@ LPBY = zero
 if (A > 0) then
   LPBY(:,1) = IndBY(:, A, 1)   ! own exact BY / BYrange only
 else !if (A < 0) then
-  LPBY(:,1) = LOG10(1.0D0/nYears)   ! dummy --> by definition no own BY info
+  LPBY(:,1) = LOG10(1.0D0/(nYears-1))   ! dummy --> by definition no own BY info
+  LPBY(nYears,1) = LOG10(zero)   ! dummy can't be 'born' in last year
 endif
 
 call CalcBYup(A, k, BYup)    ! info from parents + grandparents
@@ -14654,25 +14657,25 @@ do w=2,5
   endif
 enddo
 
-! if (A==1201) then
+! if (ALL(LPBY(:,3:5) < -HUGE(0D0))) then
   ! open (unit=42,file="log.txt",status="unknown", position="append")
   ! write (42, *) ""
-  ! write (42, *) "LPBY ", A, Parent(A,:)
-  ! write(42,'(5x, 50i8)')  (/ (w, w=BYzero+36, BYzero+nYears) /)
-  ! write (42, '(i5, 50f8.2)') 5, 10**LPBY(36:nYears,5)
-  ! if ( LPBY(44,5) < -5.0 ) then
-    ! write (42, '("self ", 50f8.2)') 10**LPBY(36:nYears,1)
-    ! write (42, '("up   ", 50f8.2)') 10**BYup(36:nYears,2)
-    ! write (42, '("down ", 50f8.2)') 10**BYdown(36:nYears,2)
-    ! write (42, '("sibs ", 50f8.2)') 10**BYsibs(36:nYears)
-    ! close(42)
-! !    stop
-  ! ! do w=1,5
-    ! ! write (42, '(i5, 50f8.2)') w, 10**LPBY(36:nYears,w)
-  ! ! enddo 
+  ! if (A>0) then
+    ! write (42, *) "LPBY ", A, Parent(A,:)  
+  ! else
+    ! write (42, *) "LPBY ", A, GpID(:,-A,k) 
+    ! write(42,*)  "Off: ", SibID(1:ns(-A,k),-A,k)
   ! endif
+ ! ! write(42,'(5x, 50i8)')  (/ (w, w=BYzero+36, BYzero+nYears) /)
+  ! write (42, '(i5, 50f8.2)') 5, 10**LPBY(:,5)
+  ! write (42, *) ""
+    ! write (42, '("self ", 50f8.2)') 10**LPBY(:,1)
+    ! write (42, '("up   ", 50f8.2)') 10**BYup(:,2)
+    ! write (42, '("down ", 50f8.2)') 10**BYdown(:,2)
+    ! write (42, '("sibs ", 50f8.2)') 10**BYsibs(:)
+    ! close(42)
+    ! stop
 ! endif
-
 
 end subroutine setEstBY
 
@@ -14706,6 +14709,7 @@ do m=1,2
   if (Par(m)==0)  cycle
   call getEstBY(Par(m), m, 3, BYP(:,m))  ! self + exact + parents + GP
   do g=1,2
+    if (GP(m,g)==0)  cycle
     call getEstBY(GP(m,g), g, 3, BYG(:,m,g))
   enddo
 enddo
@@ -14725,14 +14729,14 @@ do m=1,2
 enddo
 
 BYA = zero
-!BYA(1,:) = LOG10(zero)  ! cannot calculate for year 1 
+BYA(1,:) = LOG10(zero)  ! has parents --> cannot be born in year 1 
 do y=2,nYears  
   do m=1,2
     if (Par(m)==0)  cycle
     if (y > Ylast) then
       BYA(y,:) = LOG10(zero)  ! year y after parents last possible year of reprod
-    else if (ANY(BYP(m,:)>=1D0)) then  ! parent has exact BY
-      tmpBY = MAXLOC(BYP(m,:), DIM=1)   ! Par(m) may be dummy --> cannot use BY(Par(m)) 
+    else if (ANY(BYP(:,m)>=1D0)) then  ! parent has exact BY
+      tmpBY = MAXLOC(BYP(:,m), DIM=1)   ! Par(m) may be dummy --> cannot use BY(Par(m)) 
       BYA(y,:) = BYA(y,:) + getAP(y - tmpBY, 1, m, 0)
     else  
       ! weighed sum over all possible parent birth years      
@@ -14765,7 +14769,6 @@ enddo
 
 end subroutine CalcBYup
 
-
 ! ######################################################################
 
 subroutine CalcBYdown(A, kA, BYA)
@@ -14795,7 +14798,7 @@ endif
 
 BYO = 10**BYO
 
-BYA = zero
+BYA = zero  
 do y=1, nYears-1   ! A's BY
   do i=1, nOff
     if (ANY(BYO(:,i)>=1D0)) then  ! offspring i has exact BY
@@ -14812,7 +14815,7 @@ do y=1, nYears-1   ! A's BY
     if (BYA(y,2) < -HUGE(0.0D0)) exit  ! e.g. i born in/prior to year y - no need to look at other offspr
   enddo
 enddo
-!BYA(nYears,:) = LOG10(zero)
+BYA(nYears,:) = LOG10(zero)  ! has offspring --> cannot be born in last year
 
 
 ! if (A==118 .and. BYA(44,2) < -3.0) then
@@ -14874,7 +14877,7 @@ do m=1,2
 enddo
 
 BYA = zero
-do y=1, nYears-1 
+do y=1, nYears
   do m=1,3
     if (nSibs(m) == 0) cycle
     do i=1, nSibs(m)
@@ -14989,12 +14992,14 @@ else
   call getEstBY(B, kB, 3, BYLR(:, 2))  ! excl contributions from est. BY from offspring
 endif
 
+if (.not. (A==-7 .or. B==-7)) then
 do i=1,2
   if (ALL(BYLR(:, i) <= LOG10(1.D0/nYears))) then
     ALR = 0D0  ! no age info available
     return
   endif
-enddo     
+enddo  
+endif   
 
 if (focal==1 .or. focal==4) then  ! quick check
   do y=2, nYears  ! B 
@@ -15035,18 +15040,19 @@ ALR = LOG10(SUM(10**ALRtmp))  ! sum across age differences
 if (ALR < -HUGE(0.0D0) .or. ALR/=ALR)   ALR = impossible
 
 
-! if (A==150 .and. B==73 .and. focal==3) then
+! if ((A==-7 .and. kA==1 .and.  B==-26 .and. kB==1 .and. focal==1) .or. &
+ ! (A==-26 .and. B==-7 .and. kA==1 .and. kB==1 .and. focal==1)) then
   ! open (unit=42,file="log.txt",status="unknown", position="append")
   ! write (42, *) ""
   ! write(42,'("ALR CAU ", 2i5," ,",2i5,": ", f9.3, i3)') kA, A, kB, B, ALR, m
    ! do i=1,2
-     ! write (42, '("BYLR ", i5, 50f10.2)') AB(i), BYLR(36:46,i)
+     ! write (42, '("BYLR ", i5, 50f10.2)') AB(i), BYLR(:,i)
   ! enddo
-  ! ! write (42, *) ""   
-  ! ! do y=36, 46 !  1,nYears !-1
-    ! ! if (ALL(ALRtmp(:,y) == LOG10(zero)))  cycle
-    ! ! write(42, '("ALRtmp ", i6, 50f10.3)') BYzero + y, ALRtmp(36:46, y) !, COUNT(ALRtmp(:,y) >0)
-  ! ! enddo
+  ! write (42, *) ""   
+  ! do y=1,nYears !-1
+    ! if (ALL(ALRtmp(:,y) == LOG10(zero)))  cycle
+    ! write(42, '("ALRtmp ", i6, 50f10.3)') BYzero + y, ALRtmp(:, y) !, COUNT(ALRtmp(:,y) >0)
+  ! enddo
   ! write (42, *) ""   
   ! close(42)
 ! endif
@@ -16461,7 +16467,7 @@ end subroutine DoAdd
 
 ! #####################################################################
 
-subroutine RemoveSib(A, s, k)  ! removes individual A from sibship s
+subroutine RemoveSib(A, s, k)  ! removes individual A from sibship s. Does NOT drop sibship if ns=0
 use Global
 implicit none
 
