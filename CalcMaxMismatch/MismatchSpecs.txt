@@ -1,0 +1,5 @@
+nSNPs   100
+MAF     0.4
+ErrM_A0   0.950625   0.04875  0.000625   ! actual genotype = 0, observed as 0 / 1 / 2
+ErrM_A1   0.025000   0.95000  0.025000 
+ErrM_A2   0.000625   0.04875  0.950625
