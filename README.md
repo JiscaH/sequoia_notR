@@ -41,6 +41,11 @@ Parameter values are stored in `SequoiaSpecs.txt`. Many of these can be overrule
 ./sequoia --geno geno.txt --par --ped --verbose
 ```
 
+All command line options are shown with
+```
+./sequoia --help
+```
+
 
 ## Version
 Its version will typically be functionally identical to the latest R package beta version. To obtain an older version, please send an email. 
