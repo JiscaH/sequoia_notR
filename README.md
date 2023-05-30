@@ -1,5 +1,6 @@
 ## General
 This Fortran program is equivalent to the R package, except that the input & output does not go via R but via text files and command-line arguments. 
+Very large datasets can be incredibly slow or even impossible to load into R; this non-R version works for up to 50K - 100K genotyped individuals. 
 
 
 ## Compilation
