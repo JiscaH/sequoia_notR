@@ -1755,7 +1755,7 @@ implicit none
 double precision, intent(INOUT) :: TotLL(42)
 integer :: i, j, k, Round, isP(2), BYRank(nInd), BYRank_Selfed(nInd)
 double precision :: SortBY(nInd)
-character(len=2) :: RoundC
+!character(len=2) :: RoundC
  
 call rchkusr()     
  
@@ -1832,8 +1832,8 @@ do Round=1,41
     call Erstop("parentage not converging - need better SNP data", .FALSE.)
   endif
   
-  write(RoundC, '(i2.2)') Round
-  call writeped("Parents_round"//RoundC//".txt", .FALSE.)
+!  write(RoundC, '(i2.2)') Round
+!  call writeped("Parents_round"//RoundC//".txt", .FALSE.)
 enddo
 
 if(quiet<1)   write(*, '("Final Total LL     : ", f12.1, ", # parents:", 2i6)') &
