@@ -1251,23 +1251,21 @@ do i=1,nInd-1
       call CalcOppHom(i,j)
       LLtmp = missing
       call PairSelf(i, j, LLtmp(1))
-      call CheckPair(i, j,3,1,LL, LLX)    ! focal: PO
+      call CheckPair(i, j,3,7,LL, LLX)   
       LLtmp(2) = MaxLL(LL)
-      if (LLtmp(2) > 0 .or. (LLtmp(1) - LLtmp(2) > TF))  then   ! what threshold?  
+      if ((LLtmp(1) - LLtmp(2)) > TF)  then   
         nDupGenos = nDupGenos + 1
         DupGenos(nDupGenos,1) = i
         DupGenos(nDupGenos,2) = j
         nMisMatch(nDupGenos) = CountMismatch
         SnpdBoth(nDupGenos) = COUNT(Genos(:,i)/=-1 .and. Genos(:,j)/=-1)
-        if (LLtmp(1) < 0 .and. LLtmp(2)<0) then
-          DupLR(nDupGenos) = LLtmp(1) - LLtmp(2)
-        else 
-          DupLR(nDupGenos) = 111D0
-        endif
+        DupLR(nDupGenos) = LLtmp(1) - LLtmp(2)
       endif
     endif
     if (nDupGenos==nInd) then
-      if(quiet<1) print *, "reached max for duplicates"
+      print *, ''
+      print *, "reached max for duplicates!"
+      print *, ''
       exit
     endif
     if (nDupGenos==nInd) exit
@@ -1284,7 +1282,7 @@ endif
 !============================
 ! write to file
 write(HeaderFMT, '( "(a15, 2(a8, 4X, a", I0, ", 4X), 3a10)" )')  ID_len
-write(DataFMT, '( "(a15, 2(i8, 4X, a", I0, ", 4X), 2i10, f10.2)" )')  ID_len
+write(DataFMT,   '( "(a15, 2(i8, 4X, a", I0, ", 4X), 2i10, f10.2)" )')  ID_len
 
 if (nDupGenoID > 0 .or. nDupGenos > 0 .or. .not. dupQuiet) then
   open (unit=201,file="DuplicatesFound.txt",status="replace")
