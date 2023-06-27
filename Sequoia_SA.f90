@@ -394,16 +394,17 @@ use Global
 implicit none
 
 character(len=*), parameter :: version = '2.5.3'
-integer :: x, i,j, CalcLLR, AgeEffect, FindMaybe(2), nArg, ResumePed, &
+integer :: x, i, CalcLLR, AgeEffect, FindMaybe(2), nArg, ResumePed, &
   nAmbMax(2), FindMaybeX, NP, IOerr, MaxMismatchDup, date_time_values(8)
-double precision :: TotLL(42), Er
+double precision :: TotLL(42), Er !, CurTime(2)
 character(len=32) :: arg, argOption, DumC
 character(len=2) :: ResumePedC, HermC
 character(len=3) :: ErrFlavour
 character(len=nchar_filename) :: PedFileName, PairsFileName, OutFileName, &
   GenoFileName, LifehistFileName, AgePriorFileName, OnlyListFileName
 character(len=nchar_filename) :: FN(6)
-logical :: DoDup, DoPar, DoSibs, DoPairs, FileOK, DoReadParents, dupQuiet, SpecsOK, MaybePO_onlyOH
+logical :: DoDup, DoPar, DoSibs, DoPairs, FileOK, DoReadParents, dupQuiet, &
+  SpecsOK, MaybePO_onlyOH, NotDup
 
 quiet = 0  ! 0=not quiet, 1=quiet, -1=verbose
 dupQuiet = .TRUE.
@@ -427,6 +428,7 @@ DoSibs = .FALSE.
 DoPairs = .FALSE.
 DoReadParents = .TRUE.
 MaybePO_onlyOH = .FALSE.
+NotDup = .FALSE.
 
 inquire(file = "SequoiaSpecs.txt", exist=SpecsOK)
 if (SpecsOK) then
@@ -463,16 +465,16 @@ do x = 1, nArg
         
         case ('--dup')
           DoDup = .TRUE.
-          dupQuiet = quiet == 1
+          
+        case('--nodup')
+          NotDup = .TRUE.
           
         case ('--par')
-          DoDup = .TRUE.
           DoPar = .TRUE.  
           
         case ('--ped')
-          DoDup = .TRUE.
           DoSibs = .TRUE. 
-          
+
         case('--nopar')
           DoReadParents = .FALSE.
           
@@ -639,6 +641,13 @@ if (DoPairs .and. (DoDup .or. DoPar .or. DoSibs) .and. .not. ANY(FindMaybe==1)) 
   stop
 endif
 
+if ((DoPar .or. DoSibs) .and. .not. NotDup) then
+  DoDup = .TRUE.
+endif
+if (DoDup) then
+  dupQuiet = quiet == 1  
+endif
+
 if (LifeHistFileName == 'NoFile')  AgePriorFileName = 'NoFile'
 
 ! check if files exist
@@ -750,13 +759,10 @@ endif
 !=========================
 if (DoPar .or. DoSibs .or. any(FindMaybe ==1) .or. DoPairs) then  ! .or. CalcLLR ==1
   if(quiet<1)  print *, "Counting opposing homozygous loci between all individuals ... "
-  do i=1, nInd-1
-    if (MOD(i,200)==0) call rchkusr()
-    do j=i+1, nInd
-      if (skip(i) .and. skip(j))  cycle
-      call CalcOppHom(i,j)   ! sets OppHomM(i,j), OppHomM(j,i), LLR_O(i,j), LLR_O(j,i)
-    enddo
-  enddo 
+!  call cpu_time(CurTime(1))
+  call CalcOppHomAll()  ! sets OppHomM(i,j), OppHomM(j,i), LLR_O(i,j), LLR_O(j,i)
+!  call cpu_time(CurTime(2))
+!  write(*, '("Time: ", f6.2)')  CurTime(2) - CurTime(1)
 endif
 
 !=========================
@@ -909,7 +915,8 @@ call DeAllocAll
         print '(a, /)', 'command-line options:'
         print '(a)',    '  -v, --version       print version information and exit'
         print '(a)',    '  -h, --help          print usage information and exit'
-        print '(a)',    '  --dup               check for potential duplicates'
+        print '(a)',    '  --dup               check for potential duplicates; default TRUE if --par or --ped'
+        print '(a)',    '  --nodup             no check for potential duplicates'
         print '(a)',    '  --par               parentage assignment'
         print '(a)',    '  --ped               full pedigree reconstruction: sibship clustering,', &
                         '                        grandparents, and possibly more parents'
@@ -1504,8 +1511,8 @@ if (nAmb>1 .and. COUNT(AmbigRel(:,2) == 1) > 1) then
           trioIDs(ntrio, 2:3) = CandPar( (/u,v/) )
           trioLR(ntrio,:) = LLP
           
-          call CalcOH(i, CandPar(u), trioOH(ntrio,1))
-          call CalcOH(i, CandPar(v), trioOH(ntrio,2))
+          trioOH(ntrio,1) = OppHomM(i, CandPar(u))
+          trioOH(ntrio,2) = OppHomM(i, CandPar(v))
           call CalcTrioErr(i, CandPar( (/u,v/) ), trioOH(ntrio,3))
           if (ntrio == nInd) exit        
         enddo
@@ -2202,6 +2209,42 @@ end subroutine MakeDumNames
 ! #####################################################################
 
 ! @@@@   SUBROUTINES   @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+! #####################################################################
+
+subroutine CalcOppHomAll  ! no. opp. hom. loci + LLR PO/U
+use Global
+implicit none
+
+integer :: i,j,l, Lboth, OH_ij
+
+do i=1, nInd-1
+  if (MOD(i,500)==0) call rchkusr()
+  if (quiet==-1 .and. MOD(i, 5000)==0)  print *, i
+  do j=i+1, nInd
+    if (skip(i) .and. skip(j))  cycle
+    Lboth = 0
+    OH_ij = 0
+    do l=1,nSnp
+      if (Genos(l,i)==-1 .or. Genos(l,j)==-1)  cycle
+      Lboth = Lboth +1
+      if ((Genos(l,i)==0 .and.Genos(l,j)==2) .or. &
+       (Genos(l,i)==2 .and. Genos(l,j)==0)) then
+        OH_ij = OH_ij +1
+        if (OH_ij > maxOppHom) exit
+      endif  
+    enddo
+    OppHomM(i,j) = OH_ij
+    OppHomM(j,i) = OH_ij
+    if (OH_ij > maxOppHom)  cycle
+    if (Lboth < nSnp/20.0)  cycle
+    if (dble(OH_ij)/dble(Lboth) > 2.0*dble(MaxOppHom)/dble(nSnp))  cycle
+    call PairQPO(i, j, LLR_O(i,j))  ! LLR PO/U
+    LLR_O(j,i) = LLR_O(i,j) 
+  enddo
+enddo 
+
+end subroutine CalcOppHomAll
 
 ! #####################################################################
 
@@ -8647,8 +8690,9 @@ do k=1,2
           endif                
         else if (Par < 0) then
           do n=1,nS(-Par,3-k)
-            call CalcOH(i, SibID(n,-par,3-k), OH)
-            if (OH > maxOppHom) then
+            if (OppHomM(i, SibID(n,-par,3-k)) > maxOppHom) then
+!            call CalcOH(i, SibID(n,-par,3-k), OH)
+!            if (OH > maxOppHom) then
               MaybeOpp = .FALSE.
               exit
             endif   
@@ -8656,8 +8700,9 @@ do k=1,2
           if (MaybeOpp) then
             do n=1,2
               if (GpID(n,-Par,3-k) <= 0) cycle
-              call CalcOH(i, GpID(n,-Par,3-k), OH)
-              if (OH > maxOppHom) then
+!              call CalcOH(i, GpID(n,-Par,3-k), OH)
+!              if (OH > maxOppHom) then
+              if (OppHomM(i, GpID(n,-Par,3-k)) > maxOppHom) then
                 MaybeOpp = .FALSE.
                 exit
               endif   
