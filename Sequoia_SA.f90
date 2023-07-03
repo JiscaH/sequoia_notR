@@ -401,8 +401,8 @@ character(len=32) :: arg, argOption, DumC
 character(len=2) :: ResumePedC, HermC
 character(len=3) :: ErrFlavour
 character(len=nchar_filename) :: PedFileName, PairsFileName, OutFileName, &
-  GenoFileName, LifehistFileName, AgePriorFileName, OnlyListFileName
-character(len=nchar_filename) :: FN(6)
+  GenoFileName, LifehistFileName, AgePriorFileName, OnlyListFileName, AF_FileName
+character(len=nchar_filename) :: FN(7)
 logical :: DoDup, DoPar, DoSibs, DoPairs, FileOK, DoReadParents, dupQuiet, &
   SpecsOK, MaybePO_onlyOH, NotDup
 
@@ -414,6 +414,7 @@ PairsFileName = "NoFile"
 OutFileName = "NoFile"
 AgePriorFileName = "AgePriors.txt"
 OnlyListFileName = 'NoFile'
+AF_FileName = 'NoFile'
 
 ! MaxSibIter = 42  ! deprecated
 FindMaybe = -1
@@ -536,6 +537,10 @@ do x = 1, nArg
           i = i+1
           call get_command_argument(i, OnlyListFileName)
           
+        case ('--af', '--maf', '--freq')
+          i = i+1
+          call get_command_argument(i, AF_FileName)
+          
         case ('-o', '--out')
           i = i+1
           call get_command_argument(i, OutFileName)
@@ -652,7 +657,7 @@ if (LifeHistFileName == 'NoFile')  AgePriorFileName = 'NoFile'
 
 ! check if files exist
 FN = (/PedFileName, PairsFileName, GenoFileName, LifehistFileName, &
-  AgePriorFileName, OnlyListFileName/)
+  AgePriorFileName, OnlyListFileName, AF_FileName/)
 do i=1,6
   if (FN(i) == 'NoFile')  cycle
   inquire(file=trim(FN(i)), exist = FileOK)
@@ -701,7 +706,7 @@ if (quiet < 1) then
 endif
 
 call Initiate(GenoFileName, LifehistFileName, AgePriorFileName, PedFileName, &
- OnlyListFileName, Er, ErrFlavour)  
+ OnlyListFileName, Er, ErrFlavour, AF_FileName)  
 !if (quiet < 1) print *, 'done with initiate!'
 
 if (LifehistFileName=='NoFile' .and. (DoPar .or. DoSibs)) then
@@ -942,6 +947,9 @@ call DeAllocAll
         print '(a)',    '  --only <filename>   only find parents for this subset of individuals;',& 
                         '                        their parents in --pedigreeIN are dropped; ',&
                         '                        when combined with --ped other siblings are in DummyParents.txt'
+        print '(a)',    '  --af <filename>     optional input file with allele frequencies. Either',&
+                        '                        1 column and no header, or multiple columns with column',&
+                        '                        MAF, AF, or Frequency. E.g. output from plink --freq.'  
         print '(a)',    '  --quiet             suppress (almost) all messages'
         print '(a)',    '  --verbose           print extra many messages'
         print '(a)',    '  --pairs <filename>  calculate for each pair LLs for 7 relationships. ', &
@@ -958,12 +966,12 @@ end program Main
 ! ######################################################################
 
 subroutine Initiate(GenoFileName, LifehistFileName, AgePriorFileName, &
-  PedigreeFileName, OnlyListFileName, Er, ErrFlavour)
+  PedigreeFileName, OnlyListFileName, Er, ErrFlavour, AF_FileName)
 use Global
 implicit none
 
 character(len=nchar_filename), intent(IN) :: GenoFileName, LifehistFileName, &
-  AgePriorFileName, PedigreeFileName, OnlyListFileName  
+  AgePriorFileName, PedigreeFileName, OnlyListFileName, AF_FileName  
 double precision, intent(IN) :: Er
 character(len=3), intent(IN) :: ErrFlavour
 integer :: i
@@ -1011,7 +1019,7 @@ if (quiet < 1)  print *, "Allocating arrays ... "
 call AllocArrays()
 
 if (quiet < 1)  print *, "PrecalcProbs ... "
-call PrecalcProbs(Er, ErrFlavour) 
+call PrecalcProbs(Er, ErrFlavour, AF_FileName) 
 call rchkusr()
 
 ! parents ~~~
@@ -1215,8 +1223,8 @@ logical, intent(IN) :: dupQuiet
 integer :: i, j, l, CountMismatch, nDupGenoID, nDupGenos, dupGenoIDs(nInd,2), &
   DupGenos(nInd,2), nMismatch(nInd), SnpdBoth(nInd)
 double precision :: DupLR(nInd), LLtmp(2), LL(7), LLX(7)
-logical :: Match
 character(len=200) :: HeaderFMT, DataFMT
+integer :: IsBothScored(-1:2,-1:2), IsDifferent(-1:2,-1:2), SnpdBoth_ij
 
 nDupGenoID = 0
 do i=1,nInd-1
@@ -1237,37 +1245,40 @@ nMismatch = -9
 SnpdBoth = -9             
 DupLR = missing
 
+IsBothScored = 1
+IsBothScored(-1,:) = 0
+IsBothScored(:,-1) = 0
+IsDifferent = 0
+IsDifferent(0, 1:2) = 1
+IsDifferent(1, (/0,2/)) = 1
+IsDifferent(2, 0:1) = 1
+
 LLtmp = missing
 LL = missing
 LLX = missing
 do i=1,nInd-1
   do j=i+1, nInd
-    Match = .TRUE.
+    if (skip(i) .and. skip(j))  cycle
     CountMismatch=0
+    SnpdBoth_ij = 0
     do l=1, nSnp
-      if (Genos(l,i)==-1 .or. Genos(l,j)==-1) cycle  ! missing
-      if (Genos(l,i) /= Genos(l,j)) then
-        CountMismatch=CountMismatch+1
-        if (CountMismatch > MaxMismatchDup) then
-          Match = .FALSE.
-          exit
-        endif
-      endif
+      SnpdBoth_ij = SnpdBoth_ij + IsBothScored(Genos(l,i), Genos(l,j))
+      CountMismatch = CountMismatch + IsDifferent(Genos(l,i), Genos(l,j))
+      if (CountMismatch > MaxMismatchDup)  exit
     enddo
-    if (Match) then
-      call CalcOppHom(i,j)
-      LLtmp = missing
-      call PairSelf(i, j, LLtmp(1))
-      call CheckPair(i, j,3,7,LL, LLX)   
-      LLtmp(2) = MaxLL(LL)
-      if ((LLtmp(1) - LLtmp(2)) > TF)  then   
-        nDupGenos = nDupGenos + 1
-        DupGenos(nDupGenos,1) = i
-        DupGenos(nDupGenos,2) = j
-        nMisMatch(nDupGenos) = CountMismatch
-        SnpdBoth(nDupGenos) = COUNT(Genos(:,i)/=-1 .and. Genos(:,j)/=-1)
-        DupLR(nDupGenos) = LLtmp(1) - LLtmp(2)
-      endif
+    if (CountMismatch > MaxMismatchDup)  cycle
+    call CalcOppHom(i,j)
+    LLtmp = missing
+    call PairSelf(i, j, LLtmp(1))
+    call CheckPair(i, j,3,7,LL, LLX)   
+    LLtmp(2) = MaxLL(LL)
+    if ((LLtmp(1) - LLtmp(2)) > TF)  then   
+      nDupGenos = nDupGenos + 1
+      DupGenos(nDupGenos,1) = i
+      DupGenos(nDupGenos,2) = j
+      nMisMatch(nDupGenos) = CountMismatch
+      SnpdBoth(nDupGenos) = SnpdBoth_ij
+      DupLR(nDupGenos) = LLtmp(1) - LLtmp(2)
     endif
     if (nDupGenos==nInd) then
       print *, ''
@@ -2287,7 +2298,7 @@ IsOppHom(2, 0) = 1
 
 OH = 0
 do l=1,nSnp
-  OH = OH + IsOppHom(Genos(l,i), Genos(l,j))
+  OH = OH + IsOppHom(Genos(l,A), Genos(l,B))
   if (OH > maxOppHom) exit                      
 enddo
 
@@ -8606,7 +8617,7 @@ subroutine SibParent
 use Global
 implicit none
 
-integer :: k, s, xs, i, n, topX, CurNumC(2), OH, Par, SClone, &
+integer :: k, s, xs, i, n, topX, CurNumC(2), Par, SClone, &
   j, nCandPar, CandPar(20), h, SibTmp(maxSibSize), nSib, sib1, sxSib(maxSibSize) 
 double precision :: LL(7), dLL, LLtmp(7,2), ALR, LLO, LR, LLg(7)
 logical :: NeedsOppMerge, Maybe, MaybeOpp, AncOK, FSM
@@ -18046,23 +18057,18 @@ end subroutine getGenerations
 
 ! #####################################################################
 
-subroutine PrecalcProbs(Er, ErrFlavour)
+subroutine PrecalcProbs(Er, ErrFlavour, AF_FileName)
 use Global
 implicit none
 
 double precision, intent(IN) :: Er
 character(len=3), intent(IN) :: ErrFlavour    ! default in sequoia version 0.9, 1.1, 1.3, 2.0
+character(len=*), intent(IN) :: AF_FileName
 integer :: h,i,j,k,l,m
 double precision :: OjA(-1:2,3,nSnp), Tmp1(3), Tmp2(3,3), AF(nSnp)
 
 ! allele frequencies
-do l=1,nSnp
-  if (ANY(Genos(l,:)/=-1)) then
-    AF(l)=float(SUM(Genos(l,:), MASK=Genos(l,:)/=-1))/(COUNT(Genos(l,:)/=-1)*2)
-  else
-    AF(l) = 1D0
-  endif
-enddo
+call getAF(AF_FileName, AF)
 
 
 !###################
@@ -18229,6 +18235,75 @@ do l=1,nSnp
 enddo
 
 end subroutine PrecalcProbs
+
+!===============================================================================
+
+subroutine getAF(FileName, AF)
+  use Global 
+  implicit none
+  
+  character(len=*), intent(IN) :: FileName
+  double precision, intent(OUT) :: AF(nSnp)
+  integer :: l, nCol, nRow, AFcol, k, IOerr
+  character(len=50), allocatable :: header(:), tmpC(:)
+  double precision :: tmpD
+  
+  AF = 1D0
+  
+  if (FileName == 'NoFile') then
+  
+    do l=1,nSnp
+      if (ANY(Genos(l,:)/=-1)) then
+        AF(l)=float(SUM(Genos(l,:), MASK=Genos(l,:)/=-1))/(COUNT(Genos(l,:)/=-1)*2)
+      endif
+    enddo
+  
+  else
+    if (quiet ==-1)  print *, "Reading allele frequencies in "//trim(FileName)//" ... "
+  
+    nCol = FileNumCol(trim(FileName))
+    nRow = FileNumRow(trim(FileName))
+    if ((nCol==1 .and. nRow /= nSnp) .or. (nCol>1 .and. nRow /= (nSnp+1))) then
+      print *, "MAF file "//trim(FileName)//" has different number of SNPs than genotype file!"
+      stop
+    endif
+    allocate(header(nCol))
+    header = 'NA'
+    AFcol = 0
+    
+    open(unit=103, file=trim(FileName), status="old")     
+      if (nCol == 1) then
+        AFcol = 1
+      else
+        read(103,*)  header
+        do k=1, nCol
+          if (header(k) == 'MAF' .or. header(k)=='AF' .or. header(k)=='Frequency') then
+            AFcol = k
+          endif
+        enddo
+      endif
+      if (AFcol > 1)  allocate(tmpC(AFcol -1))
+      
+      do l=1, nSnp
+        if (AFcol == 1) then
+          read(103, *,IOSTAT=IOerr)  tmpD
+        else
+          read(103, *,IOSTAT=IOerr)  tmpC, tmpD
+        endif
+        if (IOerr > 0) then
+          print *, "Wrong input in file "//trim(FileName)//" on line ", l
+          stop
+        else if (IOerr < 0) then  
+          exit  ! EOF
+        else
+          AF(l) = tmpD
+        end if
+      enddo
+    close(103)
+
+  endif
+
+end subroutine getAF
 
 ! ##############################################################################
 
