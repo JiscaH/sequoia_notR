@@ -2217,7 +2217,15 @@ use Global
 implicit none
 
 integer :: i,j,l, Lboth, OH_ij
-
+integer :: IsBothScored(-1:2,-1:2), IsOppHom(-1:2,-1:2)
+  
+IsBothScored = 1
+IsBothScored(-1,:) = 0
+IsBothScored(:,-1) = 0
+IsOppHom = 0
+IsOppHom(0, 2) = 1
+IsOppHom(2, 0) = 1
+  
 do i=1, nInd-1
   if (MOD(i,500)==0) call rchkusr()
   if (quiet==-1 .and. MOD(i, 5000)==0)  print *, i
@@ -2226,13 +2234,9 @@ do i=1, nInd-1
     Lboth = 0
     OH_ij = 0
     do l=1,nSnp
-      if (Genos(l,i)==-1 .or. Genos(l,j)==-1)  cycle
-      Lboth = Lboth +1
-      if ((Genos(l,i)==0 .and.Genos(l,j)==2) .or. &
-       (Genos(l,i)==2 .and. Genos(l,j)==0)) then
-        OH_ij = OH_ij +1
-        if (OH_ij > maxOppHom) exit
-      endif  
+      Lboth = Lboth + IsBothScored(Genos(l,i), Genos(l,j))
+      OH_ij = OH_ij + IsOppHom(Genos(l,i), Genos(l,j))
+      if (OH_ij > maxOppHom) exit 
     enddo
     OppHomM(i,j) = OH_ij
     OppHomM(j,i) = OH_ij
@@ -2275,14 +2279,16 @@ implicit none
 integer, intent(IN) :: A, B
 integer, intent(OUT) :: OH
 integer :: l
+integer :: IsOppHom(-1:2,-1:2)
+  
+IsOppHom = 0
+IsOppHom(0, 2) = 1
+IsOppHom(2, 0) = 1
 
 OH = 0
 do l=1,nSnp
-  if ((Genos(l,A)==0 .and.Genos(l,B)==2) .or. &
-   (Genos(l,A)==2 .and. Genos(l,B)==0)) then
-    OH = OH+1
-    if (OH > maxOppHom) exit
-  endif                       
+  OH = OH + IsOppHom(Genos(l,i), Genos(l,j))
+  if (OH > maxOppHom) exit                      
 enddo
 
 end subroutine CalcOH
