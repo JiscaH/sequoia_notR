@@ -24,9 +24,9 @@ module Global
 implicit none
 
 integer :: nInd, nSnp, nIndLH, maxSibSize, MaxOppHom, MaxMendelE, Hermaphrodites, &
- nC(2), nYears, maxAgePO, nPairs, Complx, quiet, AgePhase, BYzero, ID_len
+ nC(2), nYears, maxAgePO, nPairs, Complx, quiet, AgePhase, BYzero, ID_len, mxCP
 integer, parameter :: mxA=2**6, & ! max no. ancestors considered when testing for pedigree loop
-   mxCP = 50, &  ! max no. candidate parents per sex
+!   mxCP = 250, &  ! max no. candidate parents per sex   -- now readspecs()
    MaxMaxAgePO = 101, &  ! maximum of MaxAgePO
    nchar_filename = 2000, &
    nchar_ID = 40, &     ! max. ID nchar 
@@ -17176,6 +17176,7 @@ UseAge = 1
 FindMaybe = 0
 CalcLLR = 1
 ErrFlavour = '2.0'
+mxCP = 50
 
 ntags = FileNumRow("SequoiaSpecs.txt")
 
@@ -17224,6 +17225,8 @@ do x=1, ntags
       read(tagvalue(1:2), '(i2)') CalcLLR
     case ('ErrFlavour')
       read(tagvalue(8:10), '(a3)')  ErrFlavour  
+    case ('MaxCandParents')
+      read(tagvalue(1:20), '(i20)') mxCP
   
     case default
       ! ignore the rest
