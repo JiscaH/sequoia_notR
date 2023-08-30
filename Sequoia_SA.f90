@@ -600,7 +600,12 @@ do x = 1, nArg
               call print_help()
               stop  
           end select
-
+          
+        case ('--maxCP')
+          i = i+1
+          call get_command_argument(i, argOption)
+          read(argOption(1:10), '(i10)')  mxCP   ! default: 50 (ReadSpecs())
+          
         case ('--quiet')
           if (quiet /= 0) then
             write(*,*)  "You can't specify both quiet & verbose!"
