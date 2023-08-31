@@ -2800,12 +2800,12 @@ use qsort_c_module
 implicit none
 
 integer, intent(IN) :: BYrank(nInd)
-integer, parameter :: mxxCP = 5*mxCP
-integer :: i, j, x, y, k, CandPar(mxxCP, 2), nCP(2), curPar(2), SexTmp(2), &
-  CP_rank(mxxCP), CP_tmp(mxxCP)
-double precision :: ALR, LRQ, LLR_CP(mxxCP)
+integer :: i, j, x, y, k, CandPar(5*mxCP, 2), nCP(2), curPar(2), SexTmp(2), &
+  CP_rank(5*mxCP), CP_tmp(5*mxCP), mxxCP
+double precision :: ALR, LRQ, LLR_CP(5*mxCP)
 logical :: AncOK
 
+mXXCP = 5*mxCP   ! cannot declare as parameter if mxCP is input variable
 AncOK = .FALSE.
 ALR = missing
 LRQ = missing
