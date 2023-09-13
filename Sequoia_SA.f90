@@ -2805,7 +2805,7 @@ integer :: i, j, x, y, k, CandPar(5*mxCP, 2), nCP(2), curPar(2), SexTmp(2), &
 double precision :: ALR, LRQ, LLR_CP(5*mxCP)
 logical :: AncOK
 
-mXXCP = 5*mxCP   ! cannot declare as parameter if mxCP is input variable                                                          
+mXXCP = 5*mxCP   ! cannot declare as parameter if mxCP is input variable
 AncOK = .FALSE.
 ALR = missing
 LRQ = missing
