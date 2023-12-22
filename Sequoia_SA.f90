@@ -31,21 +31,19 @@ integer, parameter :: mxA=2**6, & ! max no. ancestors considered when testing fo
    nchar_filename = 2000, &
    nchar_ID = 40, &     ! max. ID nchar 
    XP = 5  ! multiplier nInd --> max no. candidate sib pairs 
-logical :: DoMtDif
-logical, allocatable, dimension(:) :: ToCheck, SelfedIndiv, skip
-logical, allocatable, dimension(:,:) :: IsNewSibship, mtDif
+logical :: DoMtDif, DoSibs, AnyYearLast
+logical, allocatable, dimension(:) :: ToCheck(:), SelfedIndiv(:), skip(:), IsNewSibship(:,:), mtDif(:,:)
 integer, allocatable, dimension(:) :: Sex, BY, nFS, Mate, YearLast
-integer,allocatable,dimension(:,:) :: Genos, AgeDiff, Parent, OppHomM,&
-  nS, FSID, DumMate, DumClone
+integer,allocatable,dimension(:,:) :: Genos, Parent, nS, FSID, DumMate, DumClone
 integer, allocatable, dimension(:,:,:) :: SibID, GpID
 double precision :: TF, TA, OcA(-1:2,3), AKA2P(3,3,3), OKA2P(-1:2,3,3), zero
 double precision, parameter ::  missing = 999D0, impossible=777D0, &
   NotImplemented = 444D0, MaybeOtherParent = 222D0, AlreadyAss = 888D0
 double precision, allocatable, dimension(:) ::  Lind
-double precision, allocatable, dimension(:,:) :: AHWE, OHWE, LLR_O, CLL
+double precision, allocatable, dimension(:,:) :: AHWE, OHWE, CLL
 double precision, allocatable, dimension(:,:,:) :: AKAP, OKAP, OKOP, &
-  LindG, PHS, PFS,PPO, LindX, IndBY, AgePriorA
-double precision, allocatable, dimension(:,:,:,:) :: DumP, DumBY, FSLik
+  PHS, PFS, IndBY, AgePriorA, LindX
+double precision, allocatable, dimension(:,:,:,:) :: DumP, DumBY!, FSLik
 double precision, allocatable, dimension(:,:,:,:,:) :: XPr
  character(len=20) :: DumPrefix(3)
  character(len=nchar_ID), allocatable :: Id(:), DummyNamesIO(:,:)
@@ -189,8 +187,21 @@ endif
 
 end function getAP
 
+!~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+pure function AgeDiff(i,j)   
+
+integer, intent(IN) :: i,j
+integer :: AgeDiff
+
+if (BY(i)>=0 .and. BY(j)>=0) then
+  AgeDiff = BY(i) - BY(j)
+else
+  AgeDiff = 999
+endif
+
+end function AgeDiff
+
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  
- 
 subroutine Rprint(message, IntData, DblData, DataType)
 implicit none
 
@@ -216,6 +227,8 @@ character(3), intent(IN) :: DataType
   ! call ErStop("invalid DataType for Rprint")
 ! endif
 
+call timestamp(.FALSE.)
+
 if (DataType == "DBL") then
 !  dblfmt = "'("//trim(message)//", 50f10.3)'"
 !  write(*, '(a200, 50f10.3)') trim(message), DblData
@@ -223,7 +236,7 @@ if (DataType == "DBL") then
 else if (DataType == "INT") then
   print *, message, IntData
 else if (DataType == "NON") then
-  print *, message
+  print *, adjustl(trim(message))
 endif
 
 end subroutine Rprint
@@ -233,6 +246,26 @@ subroutine rchkusr    ! stand-in for R subroutine
 ! do nothing
 end subroutine rchkusr
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
+
+subroutine timestamp(spaceIN)
+    implicit none
+    
+    logical, intent(IN), OPTIONAL :: spaceIN
+    logical :: space
+    integer :: date_time_values(8)
+    
+    if(present(spaceIN))then
+      space=spaceIN
+    else
+      space=.FALSE.
+    endif
+    ! NOTE: print *, & write(*,*)  have initital space, write(*,'(...)')  does not
+    
+    call date_and_time(VALUES=date_time_values)
+    write(*,'(i2.2,":",i2.2,":",i2.2, 1X)', advance='no') date_time_values(5:7)
+    if (space) write(*, '(1X)', advance='no')
+     
+  end subroutine timestamp
 
 end module Global
 
@@ -306,6 +339,251 @@ module FileDim
   
 end module FileDim
 
+!===============================================================================
+
+module OHfun
+  use Global, ONLY : nSnp, Genos, maxOppHom, OHWE, OKOP
+  implicit none
+  
+  integer :: IsOppHom(-1:2,-1:2), Ecnt(3,3,3)
+  double precision, allocatable :: PPO(:,:,:)
+
+  contains
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  subroutine init_OH()
+  
+    integer :: l,i,j
+  
+    IsOppHom = 0
+    IsOppHom(0, 2) = 1
+    IsOppHom(2, 0) = 1
+    
+    ! offspring - dam - sire
+    Ecnt(:,1,1) = (/ 0, 1, 2 /)
+    Ecnt(:,1,2) = (/ 0, 0, 1 /)
+    Ecnt(:,1,3) = (/ 1, 0, 1 /)
+
+    Ecnt(:,2,1) = (/ 0, 0, 1 /)
+    Ecnt(:,2,2) = (/ 0, 0, 0 /)
+    Ecnt(:,2,3) = (/ 1, 0, 0 /)
+
+    Ecnt(:,3,1) = (/ 1, 0, 1 /)
+    Ecnt(:,3,2) = (/ 1, 0, 0 /)
+    Ecnt(:,3,3) = (/ 2, 1, 0 /)
+    
+    allocate(PPO(-1:2,-1:2,nSnp))
+    PPO = 1D0
+    do l=1,nSnp
+      do i=0,2  ! obs offspring 
+        do j=0,2    ! obs parent
+          PPO(i,j,l) = OKOP(i,j,l) / OHWE(i,l)
+        enddo
+      enddo
+    enddo 
+  
+  end subroutine init_OH
+  
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  integer function calcOH(i,j)  ! no. opp. hom. loci
+
+    integer, intent(IN) :: i,j
+    integer :: l, OH
+
+    OH = 0
+    do l=1,nSnp
+      OH = OH + IsOppHom(Genos(l,i), Genos(l,j))
+      if (OH > maxOppHom) exit                      
+    enddo
+    calcOH = OH
+
+  end function calcOH
+
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  pure function QLR_PO(i,j)  !quick check, not conditioning on parents.
+
+  integer, intent(IN) :: i,j
+  double precision :: QLR_PO
+  integer :: l
+  double precision :: PrL(nSnp)
+
+  PrL = 0D0
+  do l=1,nSnp
+    PrL(l) = LOG10(PPO(Genos(l,i), Genos(l,j), l))  
+  enddo
+  QLR_PO = SUM(PrL)
+
+  end function QLR_PO
+  
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  integer function CalcTrioErr(A,par)
+
+    integer, intent(IN) :: A, Par(2)
+    integer :: l,k, ME
+
+    ME = 0
+    do l=1,nSnp
+      if (Genos(l,A)==-1 .or. ALL(Genos(l, Par)==-1)) then
+        cycle
+      else if (ANY(Genos(l, Par)==-1)) then
+        do k=1,2
+          if (Genos(l, Par(k))==-1) then
+            if (((Genos(l,A)==0).and.(Genos(l,Par(3-k))==2)) .or. &
+             ((Genos(l,A)==2).and.(Genos(l,Par(3-k))==0))) then
+              ME = ME +1
+              cycle
+            endif
+          endif
+        enddo
+      else
+        ME = ME + Ecnt(Genos(l,A)+1, Genos(l, Par(1))+1, Genos(l, Par(2))+1)
+      endif
+    enddo
+    CalcTrioErr = ME
+
+  end function CalcTrioErr
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+end module OHfun
+
+!===============================================================================
+
+module CalcLik
+  use Global, ONLY : Genos, Parent, nFS, FSID, maxSibSize, hermaphrodites, DumClone,&
+    AKA2P, OKA2P
+  implicit none
+
+  contains
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  subroutine CalcLind(i)
+    use Global
+    implicit none
+
+    integer, intent(IN) :: i
+    integer :: nFSi, FSi(MaxSibSize), Inbr(2), Anc(2,mxA), PIK, l, x, y, k, z, j
+    double precision :: PrL(nSnp), Px(3,2), PrG(3), PrXYZ(3,3,3), PrX(3)
+    logical :: Selfed
+
+    if (real(COUNT(Genos(:,i)/=-1)) < nSnp/20.0) then
+      return 
+    endif
+
+    nFSi = 1 
+    FSi = 0                
+    if (Parent(i,1)<0 .or. Parent(i,2)<0) then
+      nFSi = nFS(FSID(maxSibSize+1,i))
+      FSi = FSID(1:maxSibSize, FSID(maxSibSize+1,i))  
+    endif
+
+    ! PO- and GP-mating
+    Inbr = 0
+    Anc = 0
+    PIK = 0
+    if (Parent(i,1)/=0 .and. Parent(i,2)/=0) then
+      call getAncest(i,1,Anc)
+      do k=1,2
+        if (Anc(3-k,5-k) == Parent(i,3-k)) then
+          Inbr(k) = 1
+          if (Parent(i,3-k)>0) then
+            PIK = Parent(i,3-k)
+          endif
+        endif
+      enddo
+    endif
+
+    Selfed = .FALSE.
+    if (hermaphrodites/=0) then
+      if (Parent(i,1)==Parent(i,2) .and. Parent(i,1)>0) then
+        Selfed = .TRUE.
+      else if (all(Parent(i,:) < 0)) then
+        if (DumClone(-Parent(i,1),1) == -parent(i,2)) then  
+          Selfed = .TRUE.
+        endif
+      endif
+    endif
+
+    PrL = 0D0
+    do l=1,nSnp
+      do k=1,2
+        call ParProb(l, Parent(i,k), k, i,-1, Px(:,k))
+        if (Inbr(k)==1) then
+          call ParProb(l, Anc(k,k+2), k, PIK,0, PrG)
+        endif
+      enddo
+      PrXYZ = 0D0
+      do y=1,3
+        do z=1,3
+          if (Selfed .and. y/=z)  cycle
+          if (ANY(Inbr==1)) then
+            do k=1,2
+              if (Inbr(k)==-1) then
+                PrXYZ(:,y,z) =AKA2P(:,y,z) * SUM(AKA2P(y,z,:)*PrG) *&
+                 Px(y,k) * Px(z,3-k)
+              endif
+            enddo
+          else if (Selfed) then   
+            PrXYZ(:,y,y) = AKA2P(:, y, y) * Px(y,1)
+          else
+            PrXYZ(:,y,z) = AKA2P(:, y, z) * Px(y,1) * Px(z,2)
+          endif 
+          if (nFSi > 1) then
+            do j=1, nFSi
+              if (FSi(j) == i) cycle
+              PrXYZ(:,y,z) = PrXYZ(:,y,z) * OKA2P(Genos(l,FSi(j)),y, z)
+            enddo
+          endif
+        enddo
+      enddo
+
+      PrX = 0D0
+      if(SUM(PrXYZ) > 0D0) then  
+        do x=1,3
+          PrX(x) = SUM(PrXYZ(x,:,:))/SUM(PrXYZ)
+        enddo
+        PrX = PrX / SUM(PrX)
+      endif
+      PrX = OcA(Genos(l,i), :) * PrX
+      PrL(l) = LOG10(SUM(PrX))
+      LindX(:,l, i) = PrX
+    enddo
+    Lind(i) = SUM(PrL)
+
+    if (Lind(i)> 0D0 .or. Lind(i)/=Lind(i)  .or. Lind(i) < -HUGE(1D0) .or. &   
+      any(LindX(:,:,i)/=LindX(:,:,i))) then  
+      call Rprint("",(/i,Parent(i,:)/), (/0D0/), "INT")
+      if (any(LindX(:,:,i)/=LindX(:,:,i)))  call Rprint("LindX NA", (/0/), (/0D0/), "NON")
+      call Erstop("Invalid individual LL - try increasing Err", .FALSE.)
+    endif
+
+  end subroutine CalcLind
+
+  !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
+  function FSLik(l,i)    ! LL of FS set
+
+    integer, intent(IN) :: l,i
+    double precision :: FSLik(3,3), FSLikTMP(3,3)
+    integer :: j, x, y
+
+    FSLik = 1D0
+    if (nFS(i)==0) then
+      FSLik = 1D0
+    else
+      FSLikTMP = 1D0
+      do j=1, nFS(i)
+        do y=1,3
+          do x=1,3
+            FSLikTMP(x,y) = FSLikTMP(x,y) * OKA2P(Genos(l,FSID(j,i)), x, y)
+          enddo
+        enddo
+      enddo
+      if (any(FSLikTMP/=FSLikTMP) .or. any(FSLikTMP>1.0D0))  then 
+        call Erstop("Invalid FS LL", .TRUE.)
+      endif
+      FSLik = FSLikTMP
+    endif
+    
+  end function FSLik
+
+end module CalcLik
 
 
 ! ####################################################################
@@ -413,7 +691,7 @@ program Main
 use Global
 implicit none
 
-character(len=*), parameter :: version = '2.8.3'
+character(len=*), parameter :: version = '2.9'
 integer :: x, i, CalcLLR, AgeEffect, FindMaybe(2), nArg, ResumePed, &
   nAmbMax(2), FindMaybeX, NP, IOerr, date_time_values(8)
 double precision :: TotLL(42), Er!, CurTime(2)
@@ -424,7 +702,7 @@ character(len=nchar_filename) :: PedFileName, PairsFileName, OutFileName, &
   GenoFileName, LifehistFileName, AgePriorFileName, OnlyListFileName, &
   AF_FileName, mt_FileName
 character(len=nchar_filename) :: FN(8)
-logical :: DoDup, DoPar, DoSibs, DoPairs, FileOK, DoReadParents, dupQuiet, &
+logical :: DoDup, DoPar, DoPairs, FileOK, DoReadParents, dupQuiet, &
   SpecsOK, MaybePO_onlyOH, NotDup, withAssignmentLog
 
 quiet = 0  ! 0=not quiet, 1=quiet, -1=verbose
@@ -741,8 +1019,8 @@ if (quiet < 1) then
   write(*,*) "@@@@@@@@@@@@@@@@@@@@@@@"
   write(*,*) "" 
   call date_and_time(VALUES=date_time_values)
-  print '("start time: ", i4,"-",i2.2,"-",i2.2, 2x, i2.2,":",i2.2)', &
-   date_time_values(1:3), date_time_values(5:6)
+!  print '("start time: ", i4,"-",i2.2,"-",i2.2, 2x, i2.2,":",i2.2)', &
+!   date_time_values(1:3), date_time_values(5:6)
 endif
 
 call Initiate(GenoFileName, LifehistFileName, AgePriorFileName, PedFileName, &
@@ -758,6 +1036,7 @@ if (.not. (DoDup .or. DoPar .or. DoSibs .or. DoPairs .or. any(FindMaybe==1))) th
 endif
 
 if (DoDup .or. DoPar .or. DoSibs .or. DoPairs .or. any(FindMaybe==1)) then  !  .or. CalcLLR==1
+  if (quiet < 1) call timestamp()
   if (quiet < 1) print *, 'updating all probs ... '
   call UpdateAllProbs()
 endif
@@ -774,17 +1053,19 @@ end select
 ! overview of settings
 if (quiet < 1) then
   write(*,*) ""
-  write(*,*) "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+  write(*,*) "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+  write(*, '(" @ start time    : ", i4,"-",i2.2,"-",i2.2, 2x, i2.2,":",i2.2)') date_time_values(1:3), date_time_values(5:6)
   write(*, '(" @ Geno          : ", i7, " individuals x ", i6, " SNPs")')  nInd, nSnp
-  write(*, '(" @ Sex           : Female:", i6, "  Male:", i6, "  Unknown:", i6, "  Hermaphrodite:", i6)') &
-    count(sex==1), count(sex==2), count(sex==3), count(sex==4)
-  write(*, '(" @ Birth year    :  min* - max: ", 2i5, ", Max age parent: ", i5)') &
-    BYzero +1, BYzero +nYears, maxAgePO
-  write(*,*) "@   (*: earliest birthyear for a grandparent of oldest known individual)"
+  write(*, '(" @ Sex           : Female: ", i6, "  Male:", i6)') count(sex==1), count(sex==2) 
+  write(*, '(" @               : Unknown:", i6, "  Hermaphrodite:", i6)') count(sex==3), count(sex==4)
+  write(*, '(" @ Birth year    : min* - max: ", 2i5)') BYzero +1, BYzero +nYears 
+  write(*,*) "@  (*: earliest birthyear for a grandparent of oldest individual)"
+  write(*, '(" @ Max age parent: ", i7)') maxAgePO
   if (any(skip)) write(*,*) "@ N in --only   : ", COUNT(.not. skip)
   write(*,*) "@ Pedigree-IN   : ", trim(PedFileName)
   write(*,'(" @ Genotyping error rate : ", f7.5)') Er  
-  write(*,'(" @ Max mismatch  : DUP:", i4, "  OH:", i4,  "  ME:", i4)')  MaxMismatchDup, MaxOppHom, MaxMendelE
+  write(*,'(" @ Max mismatch  :   DUP:", i4, "  OH:", i4,  "  ME:", i4)') &
+   MaxMismatchDup, MaxOppHom, MaxMendelE
   write(*,'(" @ Duplicates    : ", l3)')  DoDup
   write(*,'(" @ Parentage     : ", l3)')  DoPar
   write(*,'(" @ Full Pedigree : ", l3)')  DoSibs
@@ -795,16 +1076,17 @@ if (quiet < 1) then
   write(*,'(" @ Maybe P-O     : ", l3)')  FindMaybe(1) == 1
   write(*,'(" @ Maybe Related : ", l3)')  FindMaybe(2) == 1
   write(*,'(" @ Pair LLs      : ", l3)')  DoPairs
-  write(*,*) "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+  write(*,*) "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
   write(*,*) ""
 endif
 
 
 !=========================
 if (DoPar .or. DoSibs .or. any(FindMaybe ==1) .or. DoPairs) then  ! .or. CalcLLR ==1
+  if (quiet<1) call timestamp()
   if(quiet<1)  print *, "Counting opposing homozygous loci between all individuals ... "
 !  call cpu_time(CurTime(1))
-  call CalcOppHomAll()  ! sets OppHomM(i,j), OppHomM(j,i), LLR_O(i,j), LLR_O(j,i)
+!  call CalcOppHomAll()  ! sets OppHomM(i,j), OppHomM(j,i), LLR_O(i,j), LLR_O(j,i)
 !  call cpu_time(CurTime(2))
 !  write(*, '("Time: ", f6.2)')  CurTime(2) - CurTime(1)
 endif
@@ -813,6 +1095,7 @@ endif
 if (DoDup) then
   if (.not. dupQuiet) then
     print *, ""
+    call timestamp()
     print *, "~~~~~~~  Duplicate Check  ~~~~~~~~"
     print *, ""
   endif
@@ -822,11 +1105,14 @@ endif
 !=========================
 if (DoPar) then
   print *, ""
+  call timestamp()
   print *, "~~~~~~~  Parentage Assignment  ~~~~~~~~"
   if (PedFileName /= "NoFile") then
+    if (quiet==-1) call timestamp()
     if (quiet==-1)  write(*,*) "Checking pedigreeIN ..."
     ! ReadPedFile() called by initiate()
     call CheckPedigree(.TRUE., .TRUE.)   ! genotyped parents only ; drop parents of any in --only
+    if (quiet==-1) call timestamp()
     if(quiet==-1)  write(*, '("Total LogLik: ", f12.1, "  # parents:", 2i6)') &
           SUM(Lind), count(Parent/=0, DIM=1)
   endif
@@ -844,10 +1130,12 @@ endif
 !=========================
 if (DoSibs) then
   print *, ""
+  call timestamp()
   print *, "~~~~~~~  Full Pedigree Reconstruction  ~~~~~~~~" 
   print *, ""
   
   if (ResumePedC /= "XX") then
+    call timestamp()
     print *, "Resuming at round: ", ResumePed
   else if (DoReadParents) then
     if (trim(PedFileName) == "NoFile")  PedFileName = "Parents.txt"
@@ -861,6 +1149,7 @@ if (DoSibs) then
       call CheckPedigree(.FALSE., .TRUE.)  ! drop parents of any in --only
     endif
     call UpdateAllProbs()
+    if(quiet==-1) call timestamp(.TRUE.)
     if(quiet==-1)  write(*, '("Total LogLik: ", f12.1, "  # parents:", 2i6)') &
             SUM(Lind), count(Parent/=0, DIM=1)
   endif
@@ -870,7 +1159,8 @@ if (DoSibs) then
   if (OutFileName == "NoFile") OutFileName = "Pedigree_seq.txt"
   call writeped(OutFileName, CalcLLR==1)
   call writeAgePrior
-   if(quiet<1)  print *, "Write dummy parents ..."
+  if(quiet<1) call timestamp()
+  if(quiet<1)  print *, "Write dummy parents ..."
   call WriteDummies  ! slow?
   call WriteBYProb    
 endif
@@ -881,6 +1171,7 @@ if (trim(PedFileName) /= "NoFile" .and. .not. &
   (DoPar .or. DoSibs .or. DoPairs .or. any(FindMaybe==1))) then
   if (CalcLLR==1) then
     print *, ""
+    call timestamp()
     print *, "~~~~~~~  Parent LLR only  ~~~~~~~~"
     print *, ""
 !    call CalcParentLLR   ! done by writeped()
@@ -891,6 +1182,7 @@ if (trim(PedFileName) /= "NoFile" .and. .not. &
     call writeped(OutFileName, .TRUE.)
   else
     print *, ""
+    call timestamp()
     print *, "~~~~~~~  Parent OH only  ~~~~~~~~"
     print *, ""
     if (OutFileName == "NoFile") then
@@ -912,6 +1204,7 @@ if (ANY(FindMaybe==1)) then
     if (FindMaybe(x)==1) then
       if (quiet < 1) then
         print *, ""
+        call timestamp()
         if (x==1) then
           print *, "~~~~~~~  Checking for likely Parent - Offspring pairs  ~~~~~~~~" 
         else
@@ -950,6 +1243,7 @@ if (DoPairs) then
   close(103)
 
   print *, ""
+  call timestamp()
   print *, "~~~~~~~  Likelihoods for pairs  ~~~~~~~~"
   print *, "~~~~~~~  (n = ", NP, ") ~~~~~~~~"
   print *, ""
@@ -960,6 +1254,7 @@ endif
 
 !=========================
 if (quiet < 1)  print *, ""
+if (quiet < 1)  call timestamp()
 if (quiet < 1)  print *, "Done."
 call DeAllocAll
 
@@ -1023,20 +1318,21 @@ end program Main
 subroutine Initiate(GenoFileName, LifehistFileName, AgePriorFileName, &
   PedigreeFileName, OnlyListFileName, Er, ErrFlavour, AF_FileName, mt_FileName)
 use Global
+use OHfun, ONLY : init_OH
 implicit none
 
 character(len=nchar_filename), intent(IN) :: GenoFileName, LifehistFileName, &
   AgePriorFileName, PedigreeFileName, OnlyListFileName, AF_FileName, mt_FileName  
 double precision, intent(IN) :: Er
 character(len=3), intent(IN) :: ErrFlavour
-integer :: i
-integer, allocatable, dimension(:,:) :: BYrange                                              
-double precision :: AP_IN(MaxMaxAgePO, 5)
+integer, allocatable, dimension(:,:) :: BYrange(:,:)                                          
+double precision, allocatable :: AP_IN(:,:)
 
 zero = 0.0D0   ! compiler errors when setting it as global parameter
 
 ! genotype data  ~~~
 if (quiet < 1)  print *, ""
+if (quiet < 1)  call timestamp()
 if (quiet < 1)  print *, "Reading genotypes in ", trim(GenoFileName), " ... "
 call ReadGeno(GenoFileName)   ! overrides nInd & nSnp
 
@@ -1051,8 +1347,16 @@ allocate(YearLast(nInd))
 YearLast=999   ! NOTE: POSITIVE!
 
 if (LifehistFileName /= 'NoFile') then
+  if (quiet < 1)  call timestamp()
   if (quiet < 1)  print *, "Reading life history data in ", trim(LifehistFileName), " ... " 
   call ReadLifeHist(LifehistFileName, BYrange)
+endif
+
+if (any(YearLast /= 999)) then
+  AnyYearLast = .TRUE.
+else
+  AnyYearLast = .FALSE.
+  deallocate(YearLast)
 endif
 
 if (any(Sex==4) .and. hermaphrodites==0) then
@@ -1060,22 +1364,30 @@ if (any(Sex==4) .and. hermaphrodites==0) then
 endif
 
 ! ageprior  ~~~
+allocate(AP_IN(MaxMaxAgePO, 5))
 AP_IN = 1D0
 if ( AgePriorFileName /= 'NoFile') then
+  if (quiet < 1)  call timestamp()
   if (quiet < 1)  print *, "Reading age priors in ", trim(AgePriorFileName), " ... "
   call ReadAgePrior(AgePriorFileName, AP_IN)
+  if (quiet < 1)  call timestamp()
   if (quiet < 1)  print *, "Prepping age data ... "
 endif
 call PrepAgeData(AP_IN, BYrange)
 deallocate(BYrange)
+deallocate(AP_IN)
 
 ! general prep  ~~~
+if (quiet < 1)  call timestamp()
 if (quiet < 1)  print *, "Allocating arrays ... "
 call AllocArrays()
 
+if (quiet < 1)  call timestamp()
 if (quiet < 1)  print *, "PrecalcProbs ... "
 call PrecalcProbs(Er, ErrFlavour, AF_FileName) 
 call rchkusr()
+
+call init_OH
 
 if (mt_FileName /= 'NoFile') then
   DoMtDif = .TRUE.
@@ -1090,17 +1402,19 @@ allocate(DummyNamesIO(nInd, 2))
 DummyNamesIO = "NA"
 if (trim(PedigreeFileName)/= "NoFile") then
   call ReadPedFile(PedigreeFileName)
+  if (quiet<1)  call timestamp()
   if (quiet<1)  print *, " # parents: ", COUNT(Parent /= 0, DIM=1)
 endif
 
-allocate(FSLik(3,3,nSnp,nInd))
-do i=1, nInd
-  call CalcFSLik(i)
-enddo
+!allocate(FSLik(3,3,nSnp,nInd))
+!do i=1, nInd
+!  call CalcFSLik(i)
+!enddo
 
 ! only-those-individuals  ~~~
 if (trim(OnlyListFileName)/= "NoFile") then
   call ReadOnlyList(OnlyListFileName)
+  if (quiet<1)  call timestamp()
   if (quiet<1)  print *, "--only: ", COUNT(.not. skip), " individuals out of ", nInd
 endif
 
@@ -1120,20 +1434,20 @@ allocate(Parent(nInd,2))
 Parent = 0
 allocate(Lind(nInd))
 Lind = 0D0
-allocate(LindX(3, nSnp, nInd))
-LindX = 0D0
 
-nC = 0  
-allocate(nS(nInd/2,2))
-ns = 0
-allocate(SibID(maxSibSize, nInd/2, 2))
-SibID = 0 
-allocate(GpID(2, nInd/2,2))
-GpID = 0
-allocate(CLL(nInd/2,2))
-CLL = missing
-allocate(IsNewSibship(nInd/2, 2))
-IsNewSibship = .TRUE.
+nC = 0 
+if (DoSibs) then
+  allocate(nS(nInd/2,2))
+  ns = 0
+  allocate(SibID(maxSibSize, nInd/2, 2))
+  SibID = 0 
+  allocate(GpID(2, nInd/2,2))
+  GpID = 0
+  allocate(CLL(nInd/2,2))
+  CLL = missing
+  allocate(IsNewSibship(nInd/2, 2))
+  IsNewSibship = .TRUE.
+endif
 allocate(ToCheck(nInd))
 ToCheck = .FALSE.
 allocate(SelfedIndiv(nInd))
@@ -1148,22 +1462,14 @@ FSID = 0
 FSID(1, :) = (/ (i, i=1, nInd) /)
 FSID(MaxSibSize+1, :) = (/ (i, i=1, nInd) /)    ! 'primary' sib
 
-allocate(OppHomM(nInd, nInd))
-OppHomM = -999 
-allocate(LLR_O(nInd, nInd))
-LLR_O = missing
-
 allocate(Mate(nInd))
 Mate = 0  
-allocate(DumMate(nInd/2,2))
-DumMate = 0  
-allocate(DumClone(nInd/2,2))
-DumClone = 0  
-
-! allocate(Sex(nInd))   ! Done in ReadLifeHist()
-! Sex = 3
-! allocate(BY(nInd))
-! BY = -999
+if (DoSibs) then
+  allocate(DumMate(nInd/2,2))
+  DumMate = 0  
+  allocate(DumClone(nInd/2,2))
+  DumClone = 0  
+endif
 
 end subroutine AllocArrays
 
@@ -1330,7 +1636,7 @@ do i=1,nInd-1
       if (CountMismatch > MaxMismatchDup)  exit
     enddo
     if (CountMismatch > MaxMismatchDup)  cycle
-    call CalcOppHom(i,j)  ! OH + LLR PO/U  
+!    call CalcOppHom(i,j)  ! OH + LLR PO/U  
     LLtmp = missing
     call PairSelf(i, j, LLtmp(1))
     call CheckPair(i, j,3,7,LL, LLX)   
@@ -1355,7 +1661,7 @@ do i=1,nInd-1
 enddo
 
 if (.not. dupQuiet) then
-  print *, ""
+  call timestamp(.TRUE.)
   write(*, '("Found ", i4  ," pairs of potentially duplicated genotypes")') nDupGenos
   print *, ""
 endif
@@ -1393,14 +1699,15 @@ end subroutine duplicates
 
 subroutine findambig(ParSib, nAmbMax, onlyOH)   
 use Global
+use OHfun
 implicit none
 
 integer, intent(IN) :: ParSib, nAmbMax  ! 1: PO only; 2: all relatives
 logical, intent(IN) :: onlyOH
-integer :: namb, AmbigID(nAmbMax, 2), ambigrel(nAmbMax,2), &
+integer :: namb, AmbigID(nAmbMax, 2), ambigrel(nAmbMax,2), BYtmp(2), &
   ambigoh(nAmbMax), ntrio, trioIDs(nInd, 3), trioOH(nInd, 3), ID_len_ambig
 double precision :: ambiglr(nAmbMax, 2), trioLR(nInd, 3) 
-integer :: i, j, k, x, topX, Anci(2,mxA), Ancj(2,mxA), ADX, maybe, Lboth, &
+integer :: i, j, k, x, topX, Anci(2,mxA), Ancj(2,mxA), maybe, Lboth, &
   u,v, ncp, CandPar(mxCP), m
 double precision :: LL(7), LLtmp(7,3), dLL, LRR(3), LLX(7), LLP(3)
 character(len=2) :: RelName(9)
@@ -1441,14 +1748,16 @@ do i=1,nInd-1
     ParOK = .FALSE.
     if (ParSib <2 .or. (All(Parent(i,:)/=0) .and. ALL(Parent(j,:)/=0))) then  
     ! check if they're not PO only
-      if (LLR_O(i,j)==missing)  cycle    ! implies  OppHomM(i,j) > maxOppHom 
-      if (ParSib==1 .and. LLR_O(i,j) < TA)  cycle
-      if (ParSib==2 .and. LLR_O(i,j) < 2*TA)  cycle 
+      if (calcOH(i,j) > maxOppHom)  cycle      
+      if (ParSib==1) then
+        if (QLR_PO(i,j) < TA)  cycle
+      else if (ParSib==2) then
+        if (QLR_PO(i,j) < 2*TA)  cycle
+      endif
     endif
     if (ParSib==1) then
-      ADX = AgeDiff(i,j)
-      AgeDiff(i,j) = 999
-      AgeDiff(j,i) = 999
+      BYtmp(1:2) = BY((/i,j/))
+      BY((/i,j/)) = -9
       call ChkValidPar(i,Sex(i), j,Sex(j), ParOK(1))
       call ChkValidPar(j,Sex(j), i,Sex(i), ParOK(2))
       if (.not. ANY(ParOK))  cycle
@@ -1459,8 +1768,7 @@ do i=1,nInd-1
           LL(k) = MaxLL(LLtmp(k,1:2)) 
         enddo
         call BestRel2(LL, topX, dLL)
-        AgeDiff(i,j) = ADX
-        if (ADX /= missing)  AgeDiff(j,i) = -ADX
+        BY((/i,j/)) = BYtmp(1:2)
         if (topX==6 .or. topX==7) cycle   ! conditionally unrelated
         if (COUNT(Parent == 0) > 0.95*nInd .and. topX>2)  cycle  ! else will exceed nAmbMax
       endif
@@ -1468,7 +1776,7 @@ do i=1,nInd-1
     else if (ParSib == 2) then 
       maybe = 0
       LRR = missing
-      LRR(1) = LLR_O(i,j)
+      LRR(1) = QLR_PO(i,j)
       topX = 0
       do k=1,2 
         if (Parent(i,k)/=0 .and. Parent(i,k)==Parent(j,k)) cycle
@@ -1489,7 +1797,7 @@ do i=1,nInd-1
           if (LRR(x) > 2*TA .and. LRR(x) < missing)  maybe=1  
         enddo
         if (maybe==0)  cycle
-        if (AgeDiff(i,j)>=0) then
+        if (BY(i) > BY(j)) then
           call CheckPair(i, j, k, 7, LL, LLX)  
         else
           call CheckPair(j, i, k, 7, LL, LLX)
@@ -1509,9 +1817,9 @@ do i=1,nInd-1
     
     nAmb = nAmb + 1
     AmbigID(nAmb, :) = (/i, j/)
-    AmbigOH(nAmb) = OppHomM(i,j)
+    AmbigOH(nAmb) = calcOH(i,j)
     if (ParSib==1) then
-      AmbigLR(nAmb,1) = LLR_O(i,j)
+      AmbigLR(nAmb,1) = QLR_PO(i,j)
       AmbigRel(nAmb,1) = 1
     else if (ParSib==2) then
       AmbigLR(nAmb,1) = MAXVAL(LRR, MASK=LRR<MaybeOtherParent)
@@ -1525,7 +1833,7 @@ do i=1,nInd-1
       AmbigLR(nAmb,2) = dLL 
     endif
     if (nAmb==nAmbMax) then
-      if(quiet<1) then
+      if (quiet<1) then
         call Rprint("WARNING - reached max for maybe-rel, truncated!",(/0/), (/0.0D0/), "NON")
       endif
       exit
@@ -1533,8 +1841,8 @@ do i=1,nInd-1
   enddo
 enddo
 
-
-if (quiet < 1)  print *, "found ", nAmb , " pairs"
+if(quiet<1)  call timestamp()
+if(quiet<1)  print *, "found ", nAmb , " pairs"
 
 !~~~~~~~~~~~~
 ! triads
@@ -1544,7 +1852,8 @@ trioLR = missing
 trioOH = -9  
 
 if (nAmb>1 .and. COUNT(AmbigRel(:,2) == 1) > 1) then
-  if(quiet<1)  print *, "Checking for Parent-Parent-Offspring trios ... " 
+  if (quiet<1)  call timestamp()
+  if (quiet<1)  print *, "Checking for Parent-Parent-Offspring trios ... " 
     
   do i=1, nInd
     if (MODULO(i,500)==0)   call rchkusr()
@@ -1585,16 +1894,17 @@ if (nAmb>1 .and. COUNT(AmbigRel(:,2) == 1) > 1) then
           trioIDs(ntrio, 2:3) = CandPar( (/u,v/) )
           trioLR(ntrio,:) = LLP
           
-          trioOH(ntrio,1) = OppHomM(i, CandPar(u))
-          trioOH(ntrio,2) = OppHomM(i, CandPar(v))
-          call CalcTrioErr(i, CandPar( (/u,v/) ), trioOH(ntrio,3))
+          trioOH(ntrio,1) = calcOH(i, CandPar(u))
+          trioOH(ntrio,2) = calcOH(i, CandPar(v))
+          trioOH(ntrio,3) = CalcTrioErr(i, CandPar( (/u,v/) ) )
           if (ntrio == nInd) exit        
         enddo
         if (ntrio == nInd) exit
       enddo
     endif
   enddo
-  if (quiet < 1)    print *, "found ", ntrio, " triads"
+  if (quiet<1)  call timestamp()
+  if (quiet<1)  print *, "found ", ntrio, " triads"
 endif
 
   
@@ -1617,7 +1927,7 @@ do x=1, nAmb
   j = AmbigID(x, 2) 
   write (201, DataFMT_pairs) Id(i), Id(j), &
     Sex(i), Sex(j), AgeDiff(i,j), RelName(AmbigRel(x, 1)), &
-    AmbigLR(x,1), RelName(AmbigRel(x,2)), AmbigLR(x,2),OppHomM(i,j)
+    AmbigLR(x,1), RelName(AmbigRel(x,2)), AmbigLR(x,2),CalcOH(i,j)
 enddo  
 close(201)
 
@@ -1649,7 +1959,7 @@ character(len=nchar_filename) :: OutFileName
 character(len=200) :: HeaderFMT, DataFMT
 integer :: IOerr, nCols, theseCols(9), x, y, pairIDs(nP,2), psex(nP,2), &
   pairAgediff(nP), pairFocal(nP), pairk(nP), pdrop(nP, 2), &
-  ij(2), kij(2), Sex_ij(2), a, m, curPar(2,2), top(nP), AgeDif_ij
+  ij(2), kij(2), Sex_ij(2), a, m, curPar(2,2), top(nP), BYtmp(2)
 double precision :: LLpair(nP, 7), LLa(7), dl(nP), IndBYtmp(1:nYears,2,5)
 
 ColNamesOUT = (/ "ID1     ", "ID2     ", "Sex1    ", "Sex2    ", "AgeDif  ", &
@@ -1749,14 +2059,14 @@ do x = 1, nP
   
   ! backup age difference from lifehistory data & sex from pedigree
   Sex_ij = 0
-  AgeDif_ij = 999 
+  BYtmp = -9
   IndBYtmp = LOG10(1.0D0/nYears)
   do a=1,2
     if (ij(a) < 0)  cycle
     Sex_ij(a) = sex(ij(a))
     IndBYtmp(:,a,:) = IndBY(:,ij(a),:)
   enddo
-  if (all(ij>0))  AgeDif_ij = AgeDiff(ij(1), ij(2))
+  if (all(ij>0))  BYtmp(1:2) = BY(ij)
   
   ! set sex & age difference specified in pairs DF
   do a=1,2
@@ -1771,12 +2081,13 @@ do x = 1, nP
 
   ! set age difference 
   if (theseCols(5)/=0 .and. all(ij>0)) then
-    AgeDiff(ij(1), ij(2)) = pairAgeDiff(x) 
-    if (pairAgeDiff(x) /= 999) then
-      AgeDiff(ij(2), ij(1)) = -pairAgeDiff(x)
-    else
-      AgeDiff(ij(2), ij(1)) = 999
-    endif
+    ! TODO
+    ! AgeDiff(ij(1), ij(2)) = pairAgeDiff(x) 
+    ! if (pairAgeDiff(x) /= 999) then
+      ! AgeDiff(ij(2), ij(1)) = -pairAgeDiff(x)
+    ! else
+      ! AgeDiff(ij(2), ij(1)) = 999
+    ! endif
   else  ! for otput file only
     pairAgeDiff(x) = AgeDiff(ij(1), ij(2))
   endif
@@ -1805,8 +2116,7 @@ do x = 1, nP
     enddo
   enddo
   if (all(ij>0)) then 
-    AgeDiff(ij(1), ij(2)) = AgeDif_ij
-    if (AgeDif_ij/=999) AgeDiff(ij(2), ij(1)) = -AgeDif_ij
+    BY(ij) = BYtmp(1:2)
   endif
 
 enddo
@@ -1850,9 +2160,10 @@ AgePhase = 0
   
 !============================
 
- call UpdateAllProbs()
+call UpdateAllProbs()
 
-if (quiet<1)   write(*, '("Initial Total LL   : ", f12.1)')  SUM(Lind)
+if (quiet<1)  call timestamp(.TRUE.)
+if (quiet<1)  write(*, '("Initial Total LL   : ", f12.1)')  SUM(Lind)
  
 !============================
 ! get birthyear ranking (increasing)
@@ -1887,7 +2198,8 @@ do Round=1,41
   if (any (BY < 0))  call getRank_i(BYrank)
   
   call cpu_time(RoundTime(2))
-  if (quiet==-1)  write(*, '("Round: ", i2, ", Total LL: ", f12.1, ", # parents:", 2i6, ", time: ", f5.1)') &
+  if (quiet==-1)  call timestamp(.TRUE.)
+  if (quiet==-1)  write(*, '("Round: ", i2, ", Total LL: ", f12.1, ", # parents:", 2i6, ", time (s): ", f7.1)') &
     Round, SUM(Lind), count(Parent/=0, DIM=1), RoundTime(2) - RoundTime(1)
   do i=1,nInd
     if (Sex(i)==3) then
@@ -1921,6 +2233,7 @@ do Round=1,41
   call writeped("Parents_round"//RoundC//".txt", .FALSE.)
 enddo
 
+if (quiet<1)  call timestamp(.TRUE.)
 if(quiet<1)   write(*, '("Final Total LL     : ", f12.1, ", # parents:", 2i6)') &
    SUM(Lind), count(Parent/=0, DIM=1)
 
@@ -1938,7 +2251,7 @@ implicit none
 
 integer, intent(IN) :: AgeEffect, ResumePed   ! IN
 double precision :: CurLL(8), RoundTime(2), CurTime(0:8)
-integer :: MaxRounds, Round, RX, k, PairID(XP*nInd,2), PairType(XP*nInd), i
+integer :: MaxRounds, Round, RX, k, PairID(XP*nInd,2), PairType(XP*nInd)
 logical :: PairsFileFound 
 character(len=2) :: RoundC, StartPedC, RoundXC
 
@@ -1955,7 +2268,8 @@ endif
 
 call UpdateAllProbs()    
 
-if(quiet<1)  write(*, '("Initial Total LogLik: ", f12.1, "  # parents:", 2i6)') &
+if (quiet<1)  call timestamp(.TRUE.)
+if (quiet<1)  write(*, '("Initial Total LogLik: ", f12.1, "  # parents:", 2i6)') &
       SUM(Lind), count(Parent/=0, DIM=1)
       
 PairsFileFound = .FALSE.
@@ -1977,11 +2291,12 @@ do Round=1, MaxRounds
       if (ResumePed > 0) then
         write(StartPedC, '(i2.2)') ResumePed
         call ReadPedFile("Pedigree_round"//StartPedC//".txt")
-        do i=1, nInd
-          call CalcFSLik(i)
-        enddo
+!        do i=1, nInd
+!          call CalcFSLik(i)
+!        enddo
         call UpdateAllProbs()
-        if(quiet<1)  write(*, '("Total LogLik: ", f12.1, "  # parents:", 2i6)') &
+        if (quiet<1) call timestamp(.TRUE.)
+        if (quiet<1) write(*, '("Total LogLik: ", f12.1, "  # parents:", 2i6)') &
           SUM(Lind), count(Parent/=0, DIM=1)
         do k=1,2
           IsNewSibship(1:nC(k), k) = .FALSE.
@@ -2004,9 +2319,10 @@ do Round=1, MaxRounds
   
   if(quiet==-1) then 
     write(*,*) ""
-    write(*,*) "-----------------------------"
+    write(*,'(10x, 50a)')  "-----------------------------"
+    call timestamp()
     write(*, '(" -------   Round ", i3, "   -------")') Round
-    write(*,*) "-----------------------------"
+    write(*,'(10x, 50a)') "-----------------------------"
     write(*,*) ""
   endif
   
@@ -2029,7 +2345,8 @@ do Round=1, MaxRounds
   endif
   call cpu_time(CurTime(1))
   if(quiet==-1)  call Rprint("n pairs:", (/npairs/), (/0.0D0/), "INT")  
-  if(quiet==-1) write(*, '("Total LL : ", f12.1, ", time: ", f5.1, "  ", 2i6)') SUM(Lind), CurTime(1) - CurTime(0), nC
+  if(quiet==-1)  call timestamp(.TRUE.)
+  if(quiet==-1)  write(*, '("Total LL : ", f12.1, ", time: ", f5.1, "  ", 2i6)') SUM(Lind), CurTime(1) - CurTime(0), nC
   call rchkusr()
   
   if(quiet==-1)  call Rprint("Clustering ...", (/0/), (/0.0D0/), "NON")
@@ -2037,6 +2354,7 @@ do Round=1, MaxRounds
   call UpdateAllProbs()  
   CurLL(2) = SUM(Lind)
   call cpu_time(CurTime(2))
+  if(quiet==-1)  call timestamp(.TRUE.)
   if(quiet==-1) write(*, '("Total LL : ", f12.1, ", time: ", f5.1, "  ", 2i4, "  ", 2i6)') &
     curLL(2), CurTime(2) - CurTime(1), nC, count(Parent/=0, DIM=1)      
   
@@ -2049,15 +2367,17 @@ do Round=1, MaxRounds
   CurLL(3) = SUM(Lind)
   call cpu_time(CurTime(3))
   if (Round > RX+1) then
+    if(quiet==-1)  call timestamp(.TRUE.)
     if(quiet==-1) write(*, '("Total LL : ", f12.1, ", time: ", f5.1, "  ", 2i4)') curLL(3), CurTime(3) - CurTime(2), nC
   endif
   call rchkusr()
-    
+  
   if(quiet==-1)  call Rprint("Merge clusters ...", (/0/), (/0.0D0/), "NON")
   call Merging()
   call UpdateAllProbs() 
   CurLL(4) = SUM(Lind)
   call cpu_time(CurTime(4))
+  if(quiet==-1)  call timestamp(.TRUE.)
   if(quiet==-1) write(*, '("Total LL : ", f12.1, ", time: ", f5.1, "  ", 2i4)') curLL(4), CurTime(4) - CurTime(3), nC  
   call rchkusr()
   
@@ -2066,6 +2386,7 @@ do Round=1, MaxRounds
   call UpdateAllProbs()
   CurLL(5) = SUM(Lind)
   call cpu_time(CurTime(5))
+  if(quiet==-1)  call timestamp(.TRUE.)
   if(quiet==-1) write(*, '("Total LL : ", f12.1, ", time: ", f5.1, "  ", 2i4)') curLL(5), CurTime(5) - CurTime(4), nC
 
   if (Round > RX .or. Round==MaxRounds) then  
@@ -2074,6 +2395,7 @@ do Round=1, MaxRounds
     call UpdateAllProbs() 
     CurLL(6) = SUM(Lind)    
     call cpu_time(CurTime(6))
+    if(quiet==-1)  call timestamp(.TRUE.)
     if(quiet==-1) write(*, '("Total LL : ", f12.1, ", time: ", f6.1, "  ", 2i4)') curLL(6), CurTime(6) - CurTime(5), nC
    
     if (Round > RX+1) then  
@@ -2090,6 +2412,7 @@ do Round=1, MaxRounds
   call cpu_time(CurTime(7))
   call rchkusr() 
   if (Round > RX+1) then 
+    if(quiet==-1)  call timestamp(.TRUE.)
     if(quiet==-1) write(*, '("Total LL : ", f12.1, ", time: ", f6.1, "  ", 2i4, "  ", 2i6)') &
       curLL(7), CurTime(7) - CurTime(6), nC, count(Parent/=0, DIM=1)
   endif
@@ -2098,18 +2421,20 @@ do Round=1, MaxRounds
   call MoreParent()  !  assign additional parents to singletons 
   call UpdateAllProbs() 
   CurLL(8) = SUM(Lind)
-  call cpu_time(CurTime(8))   
+  call cpu_time(CurTime(8))
+  if(quiet==-1)  call timestamp(.TRUE.)  
   if(quiet==-1) write(*, '("Total LL : ", f12.1, ", time: ", f6.1, "  ", 2i4, "  ", 2i6)') &
     curLL(8), CurTime(8) - CurTime(7), nC, count(Parent/=0, DIM=1) 
   call rchkusr()
   
   if(quiet<1) then
     call cpu_time(RoundTime(2))
+    call timestamp(.TRUE.)
     write(*, '("Round ", i2, ":  Total LogLik: ", f12.1, "  time (sec): ", f6.1, '// &
       '"  # parents:", 2i6)') Round, SUM(Lind), RoundTime(2) - RoundTime(1), count(Parent/=0, DIM=1)
     if(quiet==-1)  call Rprint("No. dummies: ", nC, (/0.0D0/), "INT") 
-    write(*,*) ""
-    if(quiet==-1)  write(*,*) "-----------------------------"
+    if(quiet==-1)  write(*,*) ""
+    if(quiet==-1)  write(*,*) ""
   endif
 
   open(unit=202, file="LogLik.txt", status="unknown", position="append")
@@ -2117,12 +2442,14 @@ do Round=1, MaxRounds
   close(202)    
     
   if (Round == MaxRounds) then
+    write(*,'(10x, 50a)')  "-----------------------------"
     exit
   else if (curLL(8) - curLL(1) < 2D0*ABS(TF) .and. &
    ((Round > 2 .and. ResumePed <= 0) .or. (Round > ResumePed+1 .and. ResumePed > 0))) then
     if (AgeEffect==2 .and. AgePhase==1) then
       AgePhase = 2
-    else             
+    else    
+      write(*,'(10x, 50a)')  "-----------------------------"
       exit
     endif
   endif
@@ -2149,6 +2476,7 @@ nPairs = 0  ! nPairs is global
 inquire(file="Pairs_"//RoundC//".txt", exist = FileFound)
 if (.not. FileFound)  return
 
+if(quiet==-1)  call timestamp()
 if(quiet==-1)  print *, "Reading Pairs... "
 open(unit=103, file="Pairs_"//RoundC//".txt", status="old")
 read(103,*)   ! header
@@ -2164,6 +2492,7 @@ do i=1,nInd**2
   end if
 enddo
 close(103)
+if(quiet==-1)  call timestamp()
 if(quiet==-1)  print *, "Read ", nPairs ," pairs from Pairs_"//RoundC//".txt"
 
 end subroutine readpairs
@@ -2172,6 +2501,7 @@ end subroutine readpairs
 
 subroutine writeped(filename, CalcLLR)
 use Global
+use OHfun
 implicit none
 
 character(len=*), intent(IN) :: filename
@@ -2219,14 +2549,10 @@ do i=1,nInd
   if (skip(i)) cycle
   do k=1,2
     if (Parent(i,k) <= 0)  cycle
-    if (OppHomM(i, Parent(i,k)) < 0) then
-      call calcOH(i, Parent(i,k), OppHomDF(i,k))
-    else
-      OppHomDF(i,k) = OppHomM(i, Parent(i,k)) 
-    endif
+    OppHomDF(i,k) = calcOH(i, Parent(i,k)) 
   enddo
   if (Parent(i,1)>0 .and. Parent(i,2)>0) then
-    call CalcTrioErr(i, Parent(i,:), OppHomDF(i,3))
+    OppHomDF(i,3) = CalcTrioErr(i, Parent(i,:))
   endif
 enddo
 
@@ -2300,131 +2626,6 @@ end subroutine MakeDumNames
 
 ! #####################################################################
 
-subroutine CalcOppHomAll  ! no. opp. hom. loci + LLR PO/U
-use Global
-implicit none
-
-integer :: i,j,l, Lboth, OH_ij
-integer :: IsBothScored(-1:2,-1:2), IsOppHom(-1:2,-1:2)
-  
-IsBothScored = 1
-IsBothScored(-1,:) = 0
-IsBothScored(:,-1) = 0
-IsOppHom = 0
-IsOppHom(0, 2) = 1
-IsOppHom(2, 0) = 1
-  
-do i=1, nInd-1
-  if (MOD(i,500)==0) call rchkusr()
-  if (quiet==-1 .and. MOD(i, 5000)==0)  print *, i
-  do j=i+1, nInd
-    if (skip(i) .and. skip(j))  cycle
-    Lboth = 0
-    OH_ij = 0
-    do l=1,nSnp
-      Lboth = Lboth + IsBothScored(Genos(l,i), Genos(l,j))
-      OH_ij = OH_ij + IsOppHom(Genos(l,i), Genos(l,j))
-      if (OH_ij > maxOppHom) exit 
-    enddo
-    OppHomM(i,j) = OH_ij
-    OppHomM(j,i) = OH_ij
-    if (OH_ij > maxOppHom)  cycle
-    if (Lboth < nSnp/20.0)  cycle
-    if (dble(OH_ij)/dble(Lboth) > 2.0*dble(MaxOppHom)/dble(nSnp))  cycle
-    call PairQPO(i, j, LLR_O(i,j))  ! LLR PO/U
-    LLR_O(j,i) = LLR_O(i,j) 
-  enddo
-enddo 
-
-end subroutine CalcOppHomAll
-
-! #####################################################################
-
-subroutine CalcOppHom(i,j)  ! no. opp. hom. loci + LLR PO/U
-use Global
-implicit none
-
-integer, intent(IN) :: i,j
-integer :: Lboth
-
-call CalcOH(i, j, OppHomM(i,j))
-if (OppHomM(i,j) > maxOppHom) return
-OppHomM(j,i) = OppHomM(i,j)  
-Lboth = COUNT(Genos(:,i)/=-1 .and. Genos(:,j)/=-1)
-if (Lboth < nSnp/20.0)  return
-if (dble(OppHomM(i,j))/dble(Lboth)  > 2.0*dble(MaxOppHom)/dble(nSnp))  return
-call PairQPO(i, j, LLR_O(i,j))  ! LLR PO/U
-LLR_O(j,i) = LLR_O(i,j)
-
-end subroutine CalcOppHom
-
-! #####################################################################
-
-subroutine CalcOH(A,B,OH)
-use Global
-implicit none
-
-integer, intent(IN) :: A, B
-integer, intent(OUT) :: OH
-integer :: l
-integer :: IsOppHom(-1:2,-1:2)
-  
-IsOppHom = 0
-IsOppHom(0, 2) = 1
-IsOppHom(2, 0) = 1
-
-OH = 0
-do l=1,nSnp
-  OH = OH + IsOppHom(Genos(l,A), Genos(l,B))
-  if (OH > maxOppHom) exit                      
-enddo
-
-end subroutine CalcOH
-
-! #####################################################################
-
-subroutine CalcTrioErr(A,Par, ME)   ! Mendelian errors in offspring-parent-parent trios
-use Global
-implicit none
-
-integer, intent(IN) :: A, Par(2)
-integer, intent(OUT) :: ME
-integer :: l, k, Ecnt(3,3,3)   ! offspring - dam - sire
-
-Ecnt(:,1,1) = (/ 0, 1, 2 /)
-Ecnt(:,1,2) = (/ 0, 0, 1 /)
-Ecnt(:,1,3) = (/ 1, 0, 1 /)
-
-Ecnt(:,2,1) = (/ 0, 0, 1 /)
-Ecnt(:,2,2) = (/ 0, 0, 0 /)
-Ecnt(:,2,3) = (/ 1, 0, 0 /)
-
-Ecnt(:,3,1) = (/ 1, 0, 1 /)
-Ecnt(:,3,2) = (/ 1, 0, 0 /)
-Ecnt(:,3,3) = (/ 2, 1, 0 /)
-
-ME = 0
-do l=1,nSnp
-  if (Genos(l,A)==-1 .or. ALL(Genos(l, Par)==-1)) then
-    cycle
-  else if (ANY(Genos(l, Par)==-1)) then
-    do k=1,2
-      if (Genos(l, Par(k))==-1) then
-        if (((Genos(l,A)==0).and.(Genos(l,Par(3-k))==2)) .or. &
-         ((Genos(l,A)==2).and.(Genos(l,Par(3-k))==0))) then
-          ME = ME +1
-          cycle
-        endif
-      endif
-    enddo
-  else
-    ME = ME + Ecnt(Genos(l,A)+1, Genos(l, Par(1))+1, Genos(l, Par(2))+1)
-  endif
-enddo
-
-end subroutine CalcTrioErr
-
-! ######################################################################
 
 subroutine CalcPO2(A,B,C, LL)   ! LL of A, given B and/or C as parent  
 use Global
@@ -2433,20 +2634,22 @@ implicit none
 integer, intent(IN) :: A, B, C
 double precision, intent(OUT) :: LL
 integer :: l, x, y
-double precision :: PrL(nSnp), tmp(3,3)
+double precision :: PrL(nSnp), tmp(3,3), PrB(3), PrC(3)
 
 LL = missing
 PrL = 0D0
 do l=1,nSnp
-  if (Genos(l,A)==-1) cycle
+  if (Genos(l,A)==-1) cycle  
+  PrB = LindX(:,l,B) / SUM(LindX(:,l,B))
+  PrC = LindX(:,l,C) / SUM(LindX(:,l,C))
   do x=1,3
     do y=1,3
       if (B>0 .and. C>0) then
-        tmp(x,y) = OKA2P(Genos(l,A),x,y) * LindG(x,l,B) * LindG(y,l,C)
+        tmp(x,y) = OKA2P(Genos(l,A),x,y) * PrB(x) * PrC(y)
       else if (B>0 .and. C==0) then
-        tmp(x,y) = OKA2P(Genos(l,A),x,y) * LindG(x,l,B) * AHWE(y,l)
+        tmp(x,y) = OKA2P(Genos(l,A),x,y) * PrB(x) * AHWE(y,l)
       else if (B==0 .and. C>0) then
-        tmp(x,y) = OKA2P(Genos(l,A),x,y) * AHWE(x,l) * LindG(y,l,C)
+        tmp(x,y) = OKA2P(Genos(l,A),x,y) * AHWE(x,l) * PrC(y)
       else if (B==0 .and. C==0) then
         tmp(x,y) = OKA2P(Genos(l,A),x,y) * AHWE(x,l) * AHWE(y,l)
       else
@@ -2464,11 +2667,12 @@ end subroutine CalcPO2
 
 subroutine CalcP2(A, kA, B, C, kB, LLR)   ! LR of A; B & C both parent vs both U  
 use Global
+use OHfun
 implicit none
 
 integer, intent(IN) :: A, kA, B, C, kB
 double precision, intent(OUT) :: LLR
-integer :: l, x, y, z, MEtrio, P1, P2
+integer :: l, x, y, z, P1, P2
 double precision :: PrL(nSnp,2), PrXYZ(3,3,3,2), PrP(3,2), PrA(3)
 logical :: Selfed
 
@@ -2485,21 +2689,26 @@ else
   P1 = C
 endif
 
-MEtrio = 0
 LLR = missing
 if (A>0 .and. P1>0) then
-  if (OppHomM(A,P1) <0)  call CalcOppHom(A, P1)  ! also calcs LLR_O
-  if (LLR_O(A,P1)==missing .or. LLR_O(A,P1) < 5.0*TF)  LLR = impossible
+  if (calcOH(A,P1) > maxOppHom) then
+    LLR = impossible
+  else
+    if (QLR_PO(A,P1) < 5.0*TF)  LLR = impossible
+  endif
 endif
+if (LLR == impossible)  return
 if (A>0 .and. P2>0) then
-  if (OppHomM(A,P2) <0)  call CalcOppHom(A, P2)
-  if (LLR_O(A,P2)==missing .or. LLR_O(A,P2) < 5.0*TF)  LLR = impossible
+  if (calcOH(A,P2) > maxOppHom) then
+    LLR = impossible
+  else
+    if (QLR_PO(A,P2) < 5.0*TF)  LLR = impossible
+  endif
 endif
 if (LLR == impossible)  return
   
-if (A>0 .and. P1>0 .and. P2>0)  then
-  call CalcTrioErr(A, (/P1, P2/), MEtrio)
-  if (MEtrio > MaxMendelE) then
+if (A>0 .and. P1>0 .and. P2>0)  then 
+  if (CalcTrioErr(A, (/P1,P2/)) > MaxMendelE) then
     LLR = impossible
     return
   endif
@@ -2875,6 +3084,7 @@ end subroutine CheckPedigree
 subroutine Parentage(BYrank, AssignmentLogFile)
 use Global
 use qsort_c_module
+use OHfun
 implicit none
 
 integer, intent(IN) :: BYrank(nInd)
@@ -2934,8 +3144,10 @@ do x=1, nInd
     endif
     if (ANY(Parent(j,:)==i)) cycle
     if (ANY(CandPar==j) .and. Sex(j)<3) cycle  ! already included 
+    if (CalcOH(i,j) > maxOppHom)  cycle
+    if (QLR_PO(i,j) < TF)  cycle
 !      if (OppHomM(i,j) > maxOppHom .or. OppHomM(i,j)<0) cycle   ! implied by LLR_O/=missing   
-    if (LLR_O(i,j) < TF .or. LLR_O(i,j)==missing) cycle   
+ !   if (LLR_O(i,j) < TF .or. LLR_O(i,j)==missing) cycle   
     if (AgeDiff(i,j) <= 0)  cycle  
 !    if (AgeDiff(i,j)==999) then  ! age difference unknown
       call ChkAncest(j,sex(j), i,sex(i), AncOK)  ! check that i is not an ancestor of j
@@ -2974,7 +3186,7 @@ do x=1, nInd
       if (nCP(k) <= mxCP)  cycle
       LLR_CP = missing
       do y = 1, nCP(k)
-        LLR_CP(y) = LLR_O(CandPar(y,k), i)
+        LLR_CP(y) = QLR_PO(CandPar(y,k), i)
       enddo
       CP_rank = (/ (y, y=1, mxxCP, 1) /)
       LLR_CP = -LLR_CP   ! to sort decreasing
@@ -4604,25 +4816,6 @@ end subroutine FindPairs
 
 ! #####################################################################
 
-subroutine PairQPO(A, B, LR)  !quick check, not conditioning on parents.
-use Global
-implicit none
-
-integer, intent(IN) :: A, B
-double precision, intent(OUT) :: LR
-integer :: l
-double precision :: PrL(nSnp)
-
-PrL = 0D0
-do l=1,nSnp
-  PrL(l) = LOG10(PPO(Genos(l,A), Genos(l,B), l))  
-enddo
-LR = SUM(PrL)
-
-end subroutine PairQPO
-
-! #####################################################################
-
 subroutine PairQFS(A, B, LR)  !quick check, not conditioning on parents.
 use Global
 implicit none
@@ -4663,19 +4856,20 @@ end subroutine PairQHS
 
 subroutine IsSelfed(A, withFS, LR)  ! A is product of selfing, not conditioning on parents.
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A
 logical, intent(IN) :: withFS
 double precision, intent(OUT) :: LR
 integer :: l, x,u, z, v
-double precision :: PrX(3), PrXY(3,3,3), PrL(nSnp,4), LLtmp(4), PrZV(3,3), PrA(3,3) 
+double precision :: PrX(3), PrXY(3,3,3), PrL(nSnp,4), LLtmp(4), PrZV(3,3), PrA(3,3)
 
 PrL = 0D0
 do l=1,nSnp
   do x=1,3
     if (withFS) then
-      PrA = FSLik(:,:,l,FSID(maxSibSize+1, A))
+      PrA = FSLik(l,A)
     else
       PrA = OKA2P(Genos(l,A), :, :)
     endif
@@ -5199,7 +5393,7 @@ double precision :: PrX(3), PrL(nSnp)
 
 PrL = 0D0
 do l=1,nSnp
-   PrX = LindX(:,l,A)
+  PrX = LindX(:,l,A)
   do x=1,3
     PrX(x) = PrX(x) * OcA(Genos(l,B), x)
   enddo
@@ -5291,6 +5485,7 @@ end subroutine GetPOconfigs
 
 subroutine PairPO(A, B, k, focal, LL)
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, B, k, focal
@@ -5334,11 +5529,10 @@ if(Maybe(3) .and. Parent(A,3-k)==0) then  ! B PO & HS
 endif    
 
 PrL = 0D0
-LLtmp = missing                               
+LLtmp = missing                             
 do l=1,nSnp    
   call ParProb(l, Parent(A,3-k), 3-k, A, 0, PrPA)
-  PrB = LindX(:,l,B)
-  
+  PrB = LindX(:,l,B)                  
   if (Maybe(2)) then
     call ParProb(l, Parent(A,3-k), 3-k, A, -4, PrPAX)
     if (GA(3-k)==B) then  ! hermaphrodite  
@@ -5523,13 +5717,14 @@ end subroutine PairPOX
 
 subroutine PairFullSib(A, B, LL)
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, B
 double precision, intent(OUT) :: LL
 integer :: x, y, l,k, Par(2), ix, i, AlreadyHS, Ei, DoQuick, AB(2), ParA(2)
 double precision :: PrL(nSnp), PrXY(3,3), Px(3,2), LUX(2), LLtmp, &
-  dx(maxSibSize), LRQ(2), PrE(3), PrXYb(3,3,2)
+  dx(maxSibSize), LRQ(2), PrE(3), PrXYb(3,3,2), PrFS(3,3)
 logical :: AncOK(2)
 
 LL = missing
@@ -5629,7 +5824,8 @@ else if (AlreadyHS/=0 .and. (Par(1) < 0 .or. Par(2)<0)) then
           Ei = SibID(i,-Par(k), k)
           if (nFS(Ei)==0 .or. Ei==A .or. Ei==B)  cycle
           call ParProb(l, Parent(Ei, 3-k), 3-k, Ei,-1, PrE)
-          PrE = PrE * FSLik(:,x,l,Ei)
+          PrFS = FSLik(l,Ei)
+          PrE = PrE * PrFS(:,x)
           if (.not. ALL(PrE==1D0))  PrXYb(x,y,:) = PrXYb(x,y,:) * SUM(PrE)
         enddo
         PrXYb(x,y,2) = PrXYb(x,y,2) * OKA2P(Genos(l,A), x, y) * OKA2P(Genos(l,B), x, y)
@@ -7460,6 +7656,7 @@ end subroutine PairGA
 subroutine PairUA(A, B, kA, kB, LL)
 ! B half sib or full sib (kB=3) of parent kA of A?
 use Global
+use CalcLik
 use qsort_c_module
 implicit none
 
@@ -7470,7 +7667,7 @@ integer :: AA(maxSibSize), PA, nA, GA(2), BB(maxSibSize), nB, PB(2), BBx(maxSibS
   catA(maxSibSize), catG(2), catB(maxSibSize), GGP, GGG(2), doneB(maxSibSize), &
   Bj, w, l, x, g, y, z, i, r,u,j,e,Ei,m, PAx, DoQuickB
 double precision :: PrL(nSnp), PrG(3,2), PrXYZ(3,3,3), PrPA(3), PrA(3),&! PrLx(nSnp, 2), & 
-  PrPB(3), PrGA(3), PrAB(3,3,3,2), PrE(3), PrH(3), PrGG(3), PrEW(3,3), PrW(3), PrXY(3,3)                                           
+  PrPB(3), PrGA(3), PrAB(3,3,3,2), PrE(3), PrH(3), PrGG(3), PrEW(3,3), PrW(3), PrXY(3,3), PrFS(3,3)                                         
 integer, allocatable, dimension(:) :: UseEE, MateABpar, TypeEE
 double precision, allocatable, dimension(:,:,:) :: PrEE
 logical :: PAselfed, SIMPL, AncOK, MateLoop(maxSibSize,2), DoAZ
@@ -7618,23 +7815,19 @@ do x=2,mxA
     do g=1,2
       if (AncG(g,y,x) > 0) then
         if (A > 0) then
-          if (AgeDiff(A, AncG(g,y,x)) < 0) then
-            LL = impossible  ! A older than putative ancestor
-          endif 
+          if (AgeDiff(A, AncG(g,y,x)) < 0)  LL = impossible  ! A older than putative ancestor
         else if (A<0) then
-          if (ANY(AgeDiff(SibID(1:nS(-A,kA),-A,kA),AncG(g,y,x))<0)) then
-            LL = impossible  ! A older than putative ancestor
-          endif
+          do i=1, ns(-A,kA)
+            if (AgeDiff(SibID(i,-A,kA),AncG(g,y,x)) < 0)  LL = impossible
+          enddo       
         endif
         if (x==2) cycle 
         if (B > 0) then
-          if (AgeDiff(B, AncG(g,y,x)) < 0) then
-            LL = impossible  
-          endif 
+          if (AgeDiff(B, AncG(g,y,x)) < 0)  LL = impossible  
         else if (B<0) then
-          if (ANY(AgeDiff(SibID(1:nS(-B,kB),-B,kB),AncG(g,y,x))<0)) then
-            LL = impossible 
-          endif
+          do i=1, ns(-B,kB)
+            if(AgeDiff(SibID(i,-B,kB),AncG(g,y,x)) < 0)  LL = impossible
+          enddo       
         endif
       endif
     enddo
@@ -7822,11 +8015,12 @@ if (A>0 .and. B<0 .and. kB/=3) then
       if (DoQuickB == -2) then  ! all are FS; ns(s,k) = ns(..,3-k)
         call ParProb(l, Parent(Bj,3-kB),3-kB,-1,0,PrH)
       endif
+      PrFS = FSLik(l,Bj)
       do y=1,3
         do x=1,3
           if (DoQuickB == -2) then  
             do z=1,3
-              PrW(z) = FSLik(z,y,l,Bj) * XPr(2,y,l,-B,kB) * PrH(z) * AKAP(x,y,l) * &
+              PrW(z) = PrFS(z,y) * XPr(2,y,l,-B,kB) * PrH(z) * AKAP(x,y,l) * &
                SUM(OKA2P(Genos(l,A),x,:) * PrE)
             enddo
             PrXY(x,y) = SUM(PrW)         
@@ -9150,13 +9344,14 @@ end subroutine pairHSCC
 
 subroutine pairDHC(A, kA, B, withFS, LL)   ! B double half cousin of A
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, kA, B
 logical, intent(IN) :: withFS
 double precision, intent(OUT) :: LL
 integer :: x, y, z, v, w, ParB(2), m, l
-double precision :: PrL(nSnp), PrX(3,3,3,3,3), PrPA(3)
+double precision :: PrL(nSnp), PrX(3,3,3,3,3), PrPA(3), PrB(3,3)
 
 if (B<0) then
   LL = NotImplemented
@@ -9182,18 +9377,18 @@ if (LL == NotImplemented)  return
 PrL = 0D0
 do l =1, nSnp
   call ParProb(l, Parent(A,3-kA), 3-kA, A, 0, PrPA)
+  if (withFS) then
+    PrB = FSLik(l,B)
+  else
+    PrB = OKA2P(Genos(l,B),:,:)
+  endif
   do x=1,3  ! parent of A
     do y=1,3  ! grandparent 1
       do z=1,3  ! grandparent 2
         do v=1,3  ! dam of B
           do w=1,3  ! sire of B  
             PrX(x,y,z,v,w) = SUM(OKA2P(Genos(l,A), x, :) * PrPA) * AKA2P(x,y,z) * &
-              AKAP(v,y,l) * AKAP(w,z,l) * AHWE(y,l) * AHWE(z,l)
-            if (withFS) then
-              PrX(x,y,z,v,w) = PrX(x,y,z,v,w) * FSLik(v,w,l,B)
-            else
-              PrX(x,y,z,v,w) = PrX(x,y,z,v,w) * OKA2P(Genos(l,B), v, w)
-            endif
+              AKAP(v,y,l) * AKAP(w,z,l) * AHWE(y,l) * AHWE(z,l) * PrB(v,w)
           enddo
         enddo
       enddo
@@ -9477,6 +9672,7 @@ end subroutine Merging
 subroutine SibParent  
 ! for each sibship, check if a real indiv can replace the dummy parent
 use Global
+use OHfun
 implicit none
 
 integer :: k, s, xs, i, n, topX, CurNumC(2), Par, SClone, &
@@ -9501,17 +9697,23 @@ do k=1,2
     NeedsOppMerge = .FALSE.                       
         
     do i=1,nInd
+      Maybe = .TRUE.
+      MaybeOpp = .FALSE.
       if (nCandPar == mxCP) exit  !unlikely
       if (Sex(i)/=k .and. Sex(i)<3) cycle
       if (Parent(i,k)==-s) cycle
       if (ANY(GpID(:,s,k)==i)) cycle
-      if (ANY(AgeDiff(SibID(1:ns(s,k), s, k), i) <= 0))  cycle  
       if (DumClone(s,k)/=0 .and. sex(i)/=4)  cycle
+      do n=1,nS(s,k)
+        if (AgeDiff(SibID(n,s,k), i) <= 0) then
+          maybe = .FALSE.
+          exit
+        endif
+      enddo
+      if (.not. Maybe) cycle      
       if (DoMtDif) then
         if (k==1 .and. mtDif(SibID(1,s,k), i))  cycle 
-      endif
-      Maybe = .TRUE.
-      MaybeOpp = .FALSE.
+      endif      
       call CalcAgeLR(-s, k, i, k, k, -1, .TRUE., ALR)
       if (ALR==impossible .or. ALR < 3*TF)  cycle
       call ChkAncest(i,k, -s,k, AncOK)
@@ -9572,9 +9774,7 @@ do k=1,2
           endif                
         else if (Par < 0) then
           do n=1,nS(-Par,3-k)
-            if (OppHomM(i, SibID(n,-par,3-k)) > maxOppHom) then
-!            call CalcOH(i, SibID(n,-par,3-k), OH)
-!            if (OH > maxOppHom) then
+            if (CalcOH(i, SibID(n,-par,3-k)) > maxOppHom) then
               MaybeOpp = .FALSE.
               exit
             endif   
@@ -9582,9 +9782,7 @@ do k=1,2
           if (MaybeOpp) then
             do n=1,2
               if (GpID(n,-Par,3-k) <= 0) cycle
-!              call CalcOH(i, GpID(n,-Par,3-k), OH)
-!              if (OH > maxOppHom) then
-              if (OppHomM(i, GpID(n,-Par,3-k)) > maxOppHom) then
+              if (CalcOH(i, GpID(n,-Par,3-k)) > maxOppHom) then
                 MaybeOpp = .FALSE.
                 exit
               endif   
@@ -9689,6 +9887,8 @@ end subroutine SibParent
 subroutine MoreParent
 ! for each individual, check if a parent can be assigned now.
 use Global
+use OHfun
+use CalcLik
 implicit none
 
 integer :: x, i, j, k, s, curPar(2), nCP(2), CandPar(mxCP, 2), &
@@ -9696,7 +9896,7 @@ integer :: x, i, j, k, s, curPar(2), nCP(2), CandPar(mxCP, 2), &
 double precision :: LLP(2), ALR(2), LL(7,2), LRQ, dLL, LRFS(mxCP,2,2), LLtmp(7,2)
 logical :: DoNewPars, AncOK, DropS, KeepOld
 
-if (hermaphrodites==1 .or. ALL(AgeDiff==0)) then
+if (hermaphrodites==1 .or. ALL(BY==BY(1))) then
   DoNewPars = .FALSE.
 else
   DoNewPars = .TRUE.   ! do check for additional parent-offspring pairs. 
@@ -9794,8 +9994,10 @@ do x=1, nInd
         if (ANY(nCP == mxCP)) cycle
       endif
       ALR = missing
-      LLP = missing   
-      if ((LLR_O(i,j)==missing .or. LLR_O(i,j) < 5.0*TF))  cycle 
+      LLP = missing 
+      if (CalcOH(i,j) > maxOppHom)  cycle
+      if (QLR_PO(i,j) < 5.0*TF)  cycle
+!      if ((LLR_O(i,j)==missing .or. LLR_O(i,j) < 5.0*TF))  cycle 
       call CalcAgeLR(i,sex(i), j, sex(j), 0, 1, .TRUE., ALR(1))
       if (ALR(1) == impossible .or. ALR(1)<= 3.0*TF)  cycle
       call CalcAgeLR(j, sex(j), i,sex(i), 0, 1, .TRUE., ALR(2))
@@ -9997,9 +10199,9 @@ use Global
 implicit none
 
 integer :: k, s, i, r, m, par, x, nCG(2), candGP(mxCP, 2), curGP(2), &
-   ix, not4(5), BYrankC(nInd/2,2)
+   ix, not4(5), BYrankC(nInd/2,2), n
 double precision :: LRG, ALRtmp(2), LLX(3,2), dx(maxSibSize), LLA(7)
-logical :: skipCluster(maxval(nC),2), AncOK, DropS
+logical :: skipCluster(maxval(nC),2), AncOK, DropS, Maybe
 
 skipCluster = .FALSE.
 do k=1,2
@@ -10026,7 +10228,9 @@ enddo
 not4 = (/1,2,3,5,6/)
 do x=1, MAXVAL(nC)
   if (MODULO(x,10)==0)  call rchkusr()
-  if (MODULO(x,10)==0 .and. quiet==-1)  call Rprint("", (/x/), (/0D0/), "INT") 
+  if (MAXVAL(nC) > 20) then
+    if (MODULO(x,10)==0 .and. quiet==-1)  call Rprint("", (/x/), (/0D0/), "INT") 
+  endif
   
   do k=1,2
     if (x > nC(k))  cycle
@@ -10063,7 +10267,14 @@ do x=1, MAXVAL(nC)
       if (DoMtDif) then
         if (k==1 .and. Sex(i)==1 .and. mtDif(SibID(1,s,k), i))  cycle   
       endif
-      if (ANY(AgeDiff(SibID(1:ns(s,k), s, k), i) <= 1))  cycle
+      Maybe = .TRUE.
+      do n=1,ns(s,k)
+        if (AgeDiff(SibID(n,s,k), i) <= 1) then
+          Maybe = .FALSE.
+          exit
+        endif
+      enddo
+      if (.not. Maybe)  cycle
       ALRtmp = missing                
       call CalcAgeLR(-s,k, i,Sex(i), 0,1, .TRUE., ALRtmp(1))
       if (ALRtmp(1) == impossible .or. ALRtmp(1) < 3.0*TF) cycle
@@ -10517,7 +10728,7 @@ subroutine FsibsGPs
 use Global
 implicit none
 
-integer :: x, j, fsx(maxSibSize), k,m,r, nCG(2,2), candGP(mxCP,2,2), SAB(2), ix
+integer :: x, j, fsx(maxSibSize), k,m,r, nCG(2,2), candGP(mxCP,2,2), SAB(2), ix, n
 logical :: maybeGP(2,2), AncOK
 double precision :: ALR, LRG, LLX(2,2), dx(maxSibSize), LRS
 
@@ -10556,8 +10767,13 @@ do x=1, nInd
   do j=1, nInd
     maybeGP = .TRUE.
     if (ANY(fsx == j))  cycle
-    if (ANY(AgeDiff(fsx(1:nFS(x)),j) <= 1))  cycle 
-    
+    do n=1,nFS(x)
+      if (AgeDiff(fsx(n),j) <= 1) then
+        maybeGP = .FALSE.
+        exit
+      endif
+    enddo
+    if (.not. any(MaybeGP))  cycle
     do m=1,2
       if (m/=Sex(j) .and. Sex(j)<3)  maybeGP(m,:) = .FALSE.
     enddo
@@ -10827,12 +11043,13 @@ end subroutine QFS
 
 subroutine QFSGP(A, kA, SB, kB, LR)  ! A indiv or dummy, GP of SB, all B's are FS
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, kA, SB, kB
 double precision, intent(OUT) :: LR
 integer :: l, x,y, i
-double precision :: PrLR(nSnp), PrXY(3,3,2), PrA(3)!, PrY(3)
+double precision :: PrLR(nSnp), PrXY(3,3,2), PrA(3), PrI(3,3) !, PrY(3)
 
 i = FSID(maxSibSize+1, SibID(1,SB,kB))
 
@@ -10842,11 +11059,12 @@ else
   PrLR = 0D0
   do l=1,nSnp
     call ParProb(l, A, kA, 0, 0, PrA)
+    PrI = FSLik(l,i)
 !    call ParProb(l, Parent(i,3-kB),3-kB,-1,0, PrY)  ! GPs only
     do x=1,3
       do y=1,3
-        PrXY(x,y,1) = FSLik(x,y,l,i) * SUM(AKAP(x,:,l) * PrA) * AHWE(y,l)
-        PrXY(x,y,2) = FSLik(x,y,l,i) * AHWE(x,l) * AHWE(y,l)
+        PrXY(x,y,1) = PrI(x,y) * SUM(AKAP(x,:,l) * PrA) * AHWE(y,l)
+        PrXY(x,y,2) = PrI(x,y) * AHWE(x,l) * AHWE(y,l)
       enddo
     enddo
     PrLR(l) = LOG10(SUM(PrXY(:,:,1))) - LOG10(SUM(PrXY(:,:,2))) 
@@ -10937,6 +11155,7 @@ end subroutine ReOrderAdd
 
 subroutine CheckAdd(A, SB, k, focal, LLg, LL)
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, SB, k, focal
@@ -11672,12 +11891,13 @@ end subroutine Qmerge
 
 subroutine QFSmerge(SA, SB, k, LR)
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: SA, SB, k
 double precision, intent(OUT) :: LR
 integer :: l, x, z, par(2), i, j
-double precision :: PrL(nSnp), PrXZ(3,3,2)
+double precision :: PrL(nSnp), PrXZ(3,3,2), PrI(3,3), PrJ(3,3)
 
 par = 0       
 call getFSpar(SA,k, .TRUE., par(1))
@@ -11689,11 +11909,13 @@ j = FSID(maxSibSize+1, SibID(1,SB,k))
 
 PrL = 0D0
 do l=1,nSnp
+  PrI = FSLik(l,i)
+  PrJ = FSLik(l,j)
   do x=1,3
     do z=1,3
-      PrXZ(x,z,:) = FSLik(x,z,l,i) * AHWE(x,l) * AHWE(z,l)
-      PrXZ(x,z,1) = PrXZ(x,z,1) * FSLik(x,z,l,j)
-      PrXZ(x,z,2) = PrXZ(x,z,2) * SUM(FSLik(x,:,l,j) * AHWE(:,l)) 
+      PrXZ(x,z,:) = prI(x,z) * AHWE(x,l) * AHWE(z,l)
+      PrXZ(x,z,1) = PrXZ(x,z,1) * prJ(x,z)
+      PrXZ(x,z,2) = PrXZ(x,z,2) * SUM(PrJ(x,:) * AHWE(:,l)) 
     enddo
   enddo
   PrL(l) = LOG10(SUM(PrXZ(:,:,1))) - LOG10(SUM(PrXZ(:,:,2)))
@@ -12732,6 +12954,7 @@ end subroutine getOff
 
 subroutine CalcU(A, kAIN, B, kBIN, LL)  ! A, SB, k, SA, LL
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, kAIN, B, kBIN
@@ -13104,6 +13327,7 @@ end subroutine Upair
 
 subroutine UClust(A, B, kA, kB, cat, Ai, Bj, LL)
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, B, kA, kB, cat, Ai, Bj
@@ -13112,7 +13336,7 @@ integer :: nA, AA(ns(-A,kA)), GA(2), nB, BB(ns(-B,kB)), GB(2), &
   AB(2*maxSibSize), UseEE(ns(-A,kA)+ns(-B,kB)), TypeEE(ns(-A,kA)+ns(-B,kB)), &
   MateABpar(ns(-A,kA)+ns(-B,kB)), catA(maxSibSize), catB(maxSibSize), &
   l,x,y, v, i, j, z,m, f, e, u, DoneA(maxSibSize), g, Ei
-double precision :: PrL(nSnp,2), PrGA(3,2), PrGB(3,2), PrGGP(3), &
+double precision :: PrL(nSnp,2), PrGA(3,2), PrGB(3,2), PrGGP(3), PrFS(3,3), &
   PrUZ(3,3, 3,3,3,3,2), PrE(3), PrH(3), PrW(3), PrEE(3,(ns(-A,kA)+ns(-B,kB)))
 logical :: ParAisClone(maxSibSize), ParBisClone(maxSibSize), AisBclone, &
   SIMPL, DoRSibs(maxSibSize, 2)
@@ -13387,7 +13611,8 @@ do l=1, nSnp
               if (Parent(Ei, kB) == B) cycle  
               if (Parent(Ei, kA) == A) cycle
               call ParProb(l, Parent(Ei, kB), kB, Ei, -1, PrH) 
-              PrH = PrH * FSLik(:,e,l,Ei)
+              PrFS = FSLik(l,Ei)
+              PrH = PrH * PrFS(:,e)
               if (.not. all(PrH==1D0))  PrE(e) = PrE(e) * SUM(PrH)
             enddo
           enddo
@@ -13502,7 +13727,8 @@ do l=1, nSnp
               if (Parent(Ei, kA) == A) cycle 
               if (Parent(Ei, kB) == B) cycle
               call ParProb(l, Parent(Ei, kA), kA, Ei, -1, PrH) 
-              PrH = PrH * FSLik(:,e,l, Ei)
+              PrFS = FSLik(l,Ei)
+              PrH = PrH * PrFS(:,e)
               if (.not. all(PrH==1D0))  PrE(e) = PrE(e) * SUM(PrH)
             enddo
           enddo
@@ -13708,13 +13934,14 @@ end subroutine FindEE
 
 subroutine AddSib(A, SB, k, LL)  
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, SB, k
 double precision, intent(OUT) :: LL
 integer :: l, x, Bj, f, j, y, Ei, z, v, DoQuick
 double precision :: PrL(nSnp), PrX(3), PrY(3), LRQ, LLtmp(2), LLU, PrZ(3), &
-  PrYZ(3,3), PrXb(3,2), PrE(3)
+  PrYZ(3,3), PrXb(3,2), PrE(3), PrB(3,3), PrFS(3,3)
 logical :: Inbr, ParOK
 
 LL = missing
@@ -13799,10 +14026,11 @@ else
         Bj = SibID(j,SB,k)
         if (nFS(Bj)==0) cycle
         call ParProb(l, Parent(Bj,3-k), 3-k, -1, 0, PrZ)
+        PrB = FSLik(l,Bj)
         do x=1,3
           do y=1,3
             do z=1,3
-              PrYZ(y,z) = FSLik(x,z,l,Bj) * PrZ(z) * OKA2P(Genos(l,A), x, y) * PrY(y) 
+              PrYZ(y,z) = PrB(x,z) * PrZ(z) * OKA2P(Genos(l,A), x, y) * PrY(y) 
             enddo
           enddo
           PrX(x) = XPr(2,x,l, SB,k) * SUM(PrYZ)
@@ -13835,13 +14063,15 @@ else
                 if (NFS(Ei) == 0) cycle
                 if (Parent(Ei, k) == -SB) cycle
                 call ParProb(l, Parent(Ei, k), k, Ei,-1, PrE)
-                PrE = PrE * FSLik(:,z,l,Ei)
+                PrFS = FSLik(l,Ei)
+                PrE = PrE * PrFS(:,z)
                 if (.not. ALL(PrE==1D0))  PrZ(z) = PrZ(z) * SUM(PrE)  
               enddo  
             endif
           enddo
           if (.not. ALL(PrZ==1D0))  PrXb(x,1) = PrXb(x,1) * SUM(PrZ) 
-          PrZ = PrZ * FSLik(x,:,l,Bj)
+          PrB = FSLik(l,Bj)
+          PrZ = PrZ * PrB(:,x)
           PrXb(x,2) = PrXb(x,2) * SUM(PrZ)
         enddo
       enddo
@@ -13870,13 +14100,14 @@ end subroutine AddSib
 
 subroutine AddSibInbr(A,SB,k,LL)
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, SB, k
 double precision, intent(OUT) :: LL(3)
 integer :: l, x, y, GA(2), GG, Par, i, u, Bj, j, GX, Ei
 double precision :: PrL(nSnp,3), PrXY(3,3), PrZ(3), PrPA(3), LLtmp(3), &
-  ALR(3), LLU(4), PrXYU(3,3,3), PrLU(nSnp,3), PrE(3)
+  ALR(3), LLU(4), PrXYU(3,3,3), PrLU(nSnp,3), PrE(3), PrFS(3,3)
 logical :: maybe(3)
 
 ! 1: Par(Parent(A,3-k),k)=SB 
@@ -14019,18 +14250,20 @@ do l=1,nSnp
             Ei = SibID(i,-GX,3-k)
             if (Ei==A .or. Parent(Ei,k)==-SB .or. nFS(Ei)==0)  cycle
             call ParProb(l, Parent(Ei,k), k, Ei, -1, PrE)
-            PrE = PrE * FSLik(y,:,l,Ei)
+            PrFS = FSLik(l,Ei)
+            PrE = PrE * PrFS(:,y)
             if (.not. all(PrE==1D0))  PrXY(x,y) = PrXY(x,y) * SUM(PrE)
           enddo
         endif
         do j=1, nS(SB,k)
           Bj = SibID(j,SB,k)
           if (nFS(Bj)==0) cycle
+          PrFS = FSLik(l,Bj)
           if (Parent(Bj,3-k)==GX .and. GX/=0) then
-            PrXY(x,y) = PrXY(x,y) * FSLik(x,y,l,Bj)
+            PrXY(x,y) = PrXY(x,y) * PrFS(x,y)
           else
             call ParProb(l, Parent(Bj,3-k), 3-k, Bj, -1, PrE)
-            PrE = PrE * FSLik(x,:,l,Bj)
+            PrE = PrE * PrFS(x,:)
             if (.not. all(PrE==1D0))  PrXY(x,y) = PrXY(x,y) * SUM(PrE)
           endif
         enddo
@@ -14124,13 +14357,14 @@ end subroutine AddSibInbr
 
 subroutine MergeSibs(SA, SB, k, LL)  
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: SA, SB, k
 double precision, intent(OUT) :: LL
 integer :: G(2), nAB(2), AB(2,maxSibsize), catG, catGG(2), GGP(2), ParPar(2), &
   catA(ns(SA,k)), catB(ns(SB,k)), l,x,y, r,v, Bj, Ai, i,  m, Ei, e,f, j, z
-double precision :: PrL(nSnp, 2), PrG(3,2), PrXYZ(3,3,3,2), PrX(3,2), PrE(3), PrH(3)!, PrXY(3,3)
+double precision :: PrL(nSnp, 2), PrG(3,2), PrXYZ(3,3,3,2), PrX(3,2), PrE(3), PrH(3), PrFS(3,3)!, PrXY(3,3)
 logical :: AncOK(2), ParIsClone(2,maxSibsize)
 
 LL = missing
@@ -14325,7 +14559,8 @@ do l=1,nSnp
                 if (Parent(catGG(3-k),3-k) == Ei)  cycle
               endif  
               call ParProb(l, Parent(Ei, k), k, Ei, -1, PrH)
-              PrH = PrH * FSLik(:,e,l,Ei)
+              PrFS = FSLik(l,Ei)
+              PrH = PrH * PrFS(:,e)
               if (.not. ALL(PrH==1D0))  PrE(e) = PrE(e) * SUM(PrH)
             enddo
           enddo
@@ -14343,12 +14578,14 @@ do l=1,nSnp
           endif
         endif
         
-        PrE = PrE * FSLik(x,:,l,Ai)
+        PrFS = FSLik(l,Ai)
+        PrE = PrE * PrFS(:,x)
 
         if (j==1) then
           if (catA(r)/=0) then
             Bj = AB(2, catA(r))
-            PrE = PrE * FSLik(x,:,l,Bj)
+            PrFS = FSLik(l,Bj)
+            PrE = PrE * PrFS(:,x)
           endif
         endif
 
@@ -14403,6 +14640,7 @@ end subroutine MergeSibs
 
 subroutine AddFS(A, SB, kB, SA, kAx, LL, TopSib, dLL)  ! A/SA FS with any B?
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, SB, kB, SA, kAx
@@ -14411,7 +14649,7 @@ double precision, intent(OUT) :: LL, dLL(maxSibSize)  ! dLL
 integer :: PA, kA, AncA(2,mxA), GA(2), InbrX, Par(nS(SB,kB)), MaybeFS(nS(SB,kB)), &
   f, i, Bj, Inbr(nS(SB,kB)),  GB(ns(SB,kB), 2), DoQuick, l,x,y,g,h,Ei,z,j,Rj, ParAtmp                       
 double precision :: ALR, LRQ, LLtmp(2), LLUX, PrL(nSnp, nS(SB,kB),2), PrXY(3,3,2), &
-  PrG(3), PrX(3,2), PrY(3,2), PrW(3), PrZ(3), PrV(3) 
+  PrG(3), PrX(3,2), PrY(3,2), PrW(3), PrZ(3), PrV(3), PrB(3,3), PrF(3,3)
 logical :: ParOK, ParBisClone(ns(SB,kB))
 
 LL = missing
@@ -14662,9 +14900,10 @@ else
       if (MaybeFS(f) < 1) cycle
       Bj = SibID(f, SB, kB)
       do l=1, nSnp
+        PrB = FSLik(l,Bj)
         do x=1,3
           do y=1,3
-            PrXY(x,y,:) = XPr(2,x,l,SB,kB) * XPr(2,y,l,-par(f),3-kB) * FSLik(x,y,l,Bj)
+            PrXY(x,y,:) = XPr(2,x,l,SB,kB) * XPr(2,y,l,-par(f),3-kB) * PrB(x,y)
             PrXY(x,y,1) = PrXY(x,y,1) * OKA2P(Genos(l,A),x,y)
             if (PA/=0) then
               PrXY(x,y,2) = PrXY(x,y,2) * OKAP(Genos(l,A), y, l)
@@ -14734,19 +14973,22 @@ else
                         if (Parent(Rj,3-kB) == Par(g) .and. Par(g)/=0)  cycle
                         if (nFS(Rj)==0)  cycle
                         call ParProb(l, Parent(Rj,3-kB),3-kB, Rj,-1, PrV)
-                        PrV = PrV * FSLik(:,z,l,Rj)
+                        PrF = FSLik(l,Rj)
+                        PrV = PrV * PrF(:,z)
                         if (.not. all(PrV==1D0))  PrZ(z) = PrZ(z) * SUM(PrV)
                       enddo
                     enddo
                   else
                     call ParProb(l, Parent(Ei,kB), kB, Ei,-1, PrZ)
                   endif
-                  PrZ = PrZ * FSLik(y,:,l,Ei)
+                  PrF = FSLik(l,Ei)
+                  PrZ = PrZ * PrF(:,y)
                   if (.not. all(PrZ==1D0))  PrY(y,:) = PrY(y,:) * SUM(PrZ)
                 enddo
               endif
               
-              PrY(y,:) = PrY(y,:) * FSLik(x,y,l,Bj)
+              PrB = FSLik(l,Bj)
+              PrY(y,:) = PrY(y,:) * PrB(x,y)
                 
               if (g==f) then  
                 if (A/=0) then
@@ -14843,19 +15085,22 @@ end subroutine AddFS
 
 subroutine AddParent(A, SB, k, LL)  ! is A parent of sibship SB?  (replace dummy)
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, SB, k
 double precision, intent(OUT) :: LL
 integer :: G(2), m, n, Inbr, DoQuick, l,x,y,Bi, Ei, i,j,z
-double precision :: LRQ, PrL(nSnp), PrG(3, 2), PrXY(3,3,2),  PrZ(3),  PrE(3)
+double precision :: LRQ, PrL(nSnp), PrG(3,2), PrXY(3,3,2), PrZ(3), PrE(3), PrB(3,3)
 logical :: AncOK, ParBisClone(ns(SB,k)), Aselfed
 
 LL = missing
-if (ANY(AgeDiff(SibID(1:nS(SB,k),SB,k), A)<=0)) then 
-  LL = impossible
-  return
-endif
+do i=1,ns(SB,k)
+  if (AgeDiff(SibID(i,SB,k), A) <= 0) then
+    LL = impossible
+    return
+  endif
+enddo
 
 call ChkAncest(A,0, -SB,k, AncOK) ! e.g. if age A unknown, or all age B's unknown
 if (.not. AncOK) then
@@ -14969,15 +15214,16 @@ do l=1,nSnp
             enddo
           endif
           
+          PrB = FSLik(l,Bi)
           if (Inbr == n) then
             PrXY(x,y,:) = PrXY(x,y,:) * PrZ(y)
-            PrXY(x,y,2) = PrXY(x,y,2) * FSLik(x,y,l,Bi)
+            PrXY(x,y,2) = PrXY(x,y,2) * PrB(x,y)
           else if (ParBisClone(n)) then
             PrXY(x,y,:) = PrXY(x,y,:) * PrZ(x)
-            PrXY(x,y,2) = PrXY(x,y,2) * FSLik(x,x,l,Bi)
+            PrXY(x,y,2) = PrXY(x,y,2) * PrB(x,x)
           else
-            if (.not. all(PrZ==1D0))  PrXY(x,y,1) = PrXY(x,y,1) * SUM(PrZ)
-            PrZ = PrZ * FSLik(x,:,l,Bi)
+            if (.not. all(PrZ==1D0)) PrXY(x,y,1) = PrXY(x,y,1) * SUM(PrZ)
+            PrZ = PrZ * PrB(:,x)
             PrXY(x,y,2) = PrXY(x,y,2) * SUM(PrZ)
           endif
         enddo
@@ -14995,13 +15241,14 @@ end subroutine AddParent
 
 subroutine AddGP(A, SB, k, LL)  ! add A as a grandparent to sibship SB
 use Global
+use CalcLik
 implicit none 
 
 integer, intent(IN) :: A, SB, k
 double precision, intent(OUT) :: LL
 integer :: cat, catG, DoQuick, curGP(2), l, x,y, m, i,  z, g, Bi,  Ei,w,v,j
 double precision :: PrL(nSnp), LLtmp(2), LLU, PrG(3), PrPA(3,2), &
-  PrXYZ(3,3,3,2), PrP(3), PrW(3), PrE(3)
+  PrXYZ(3,3,3,2), PrP(3), PrW(3), PrE(3), PrF(3,3), PrA(3)
 logical :: ParOK, ParBisClone(ns(SB,k))
 
 LL = missing
@@ -15120,13 +15367,15 @@ else
     if (catG/=0) then  
       call ParProb(l, Parent(A,3-k), 3-k, -1, 0, PrPA(:,3-k))
       call ParProb(l, Parent(A,k), k, -1, 0, PrPA(:,k))
+    else
+      PrA = LindX(:,l,A)/SUM(LindX(:,l,A))
     endif
     
     PrXYZ = 0D0
     do x=1,3  ! SB
       do y=1,3
         if (catG == 0) then
-          PrXYZ(x,y,1,:) = SUM(AKA2P(x, :, y) * PrG * LindG(y,l,A))
+          PrXYZ(x,y,1,:) = SUM(AKA2P(x, :, y) * PrG * PrA(y))
         else
           do z=1,3  ! Parent(A,3-k) 
             do g=1,3
@@ -15166,7 +15415,8 @@ else
                         PrE = PrE * OKA2P(Genos(l,FSID(j,Ei)),w,:)
                       enddo
                     else
-                      PrE = PrE * FSLik(:,w,l,Ei)
+                      PrF = FSLik(l,Ei)
+                      PrE = PrE * PrF(:,w)
                     endif
                     if (.not. ALL(PrE==1D0))  PrW(w) = PrW(w) * SUM(PrE)  
                   enddo  
@@ -15183,7 +15433,8 @@ else
                 PrXYZ(x,y,:,1) = PrXYZ(x,y,:,1) * SUM(PrW)
               endif 
               
-              PrW = PrW * FSLik(x,:,l,Bi)
+              PrF = FSLik(l,Bi)
+              PrW = PrW * PrF(:,x)
               
               if (catG == i) then
                 PrXYZ(x,y,z,2) = PrXYZ(x,y,z,2) * PrW(z)
@@ -15216,6 +15467,7 @@ end subroutine AddGP
 
 subroutine AddGGP(A, SB, k, LL)
 use Global
+use CalcLik
 implicit none
 ! A a GGP of sibship SB? (only calculating over non-gp-assigned)
 
@@ -15223,7 +15475,7 @@ integer, intent(IN) :: A, SB, k
 double precision, intent(OUT) :: LL
 integer :: m, n, catG, GG, AncG(2,mxA), DoQuick, l, x, y,z,i, v, Bj, w,Ei
 double precision :: PrL(nSnp), PrXYZ(3,3,3,2), PrZ(3),PrA(3),PrP(3),PrV(3), &
-  PrW(3), PrE(3), PrG(3)
+  PrW(3), PrE(3), PrG(3), PrF(3,3)
 
 LL = missing
 if (GpID(1, SB,k)/=0) then
@@ -15367,14 +15619,16 @@ do l=1,nSnp
               Ei = SibID(v, -Parent(Bj, 3-k), 3-k)  
               if (NFS(Ei) == 0) cycle
               if (Parent(Ei, k) == -SB) cycle
-              call ParProb(l, Parent(Ei, k), k, Ei,-1, PrE)       
-              PrE = PrE * FSLik(:,w,l,Ei)
+              call ParProb(l, Parent(Ei, k), k, Ei,-1, PrE)
+              PrF = FSLik(l,Ei)
+              PrE = PrE * PrF(:,w)
               if (.not. ALL(PrE==1D0))  PrW(w) = PrW(w) * SUM(PrE)  
             enddo  
           enddo
           if (.not. all(PrW==1D0))  PrXYZ(x,:,:,1) = PrXYZ(x,:,:,1) * SUM(PrW)
         endif          
-        PrW = PrW * FSLik(x,:,l,Bj)
+        PrF = FSLik(l,Bj)
+        PrW = PrW * PrF(:,x)
         if (.not. all(PrW==1D0))  PrXYZ(x,:,:,2) = PrXYZ(x,:,:,2) * SUM(PrW)
       enddo 
     endif
@@ -15400,13 +15654,14 @@ end subroutine AddGGP
 
 subroutine addGAU(A, SB, k, m, LL)  ! A great-full-avuncular of B's
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, SB, k, m
 double precision, intent(OUT) :: LL                                                                 
 integer :: nOff, Offspr(maxSibSize), sxOff(maxSibSize), DoQuick, &
   l, x, y, z, v,g, i, Bi, Ei, w,j, AncG(2,mxA)
-double precision :: PrL(nSnp), PrGGG(3,2), PrXV(3,3,3,3,2), PrG(3), PrW(3), PrE(3)
+double precision :: PrL(nSnp), PrGGG(3,2), PrXV(3,3,3,3,2), PrG(3), PrW(3), PrE(3), PrF(3,3)
 
 LL = missing
 if (GpID(m,SB,k)/=0) then
@@ -15465,13 +15720,15 @@ do l=1,nSnp
                     if (NFS(Ei) == 0) cycle
                     if (Parent(Ei, k) == -SB) cycle
                     call ParProb(l, Parent(Ei, k), k, Ei,-1, PrE)
-                    PrE = PrE * FSLik(:,w,l,Ei)
+                    PrF = FSLik(l,Ei)
+                    PrE = PrE * PrF(:,w)
                     if (.not. ALL(PrE==1D0))  PrW(w) = PrW(w) * SUM(PrE)  
                   enddo  
                 enddo
                 PrXV(x,y,z,v,1) = PrXV(x,y,z,v,1) * SUM(PrW)
               endif
-              PrW = PrW * FSLik(x,:,l,Bi)
+              PrF = FSLik(l,Bi)
+              PrW = PrW * PrF(:,x)
               PrXV(x,y,z,v,2) = PrXV(x,y,z,v,2) * SUM(PrW)
             enddo
           endif
@@ -15490,6 +15747,7 @@ end subroutine addGAU
 subroutine ParentHFS(A, SA, kA, SB, kB, hf, LL)  
 ! parents of SA and SB HS/FS?
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, SA, kA, SB, kB, hf
@@ -15498,7 +15756,7 @@ integer :: PA, nA, AncA(2,mxA), AA(maxSibSize), G(2), AncB(2,mxA), GA(2), GB(2),
   catA(maxSibSize), catB(nS(SB,kB)), catG, GGP(2), DoQuickA, DoQuickB, &
   m, l, x, y, u,v, i, j,z, r, Ei, e, DoneA(MaxSibSize), Bj
 double precision :: LLm(2), ALR, PrL(nSnp), PrG(3,2), PrXV(3,3,3,3,3,2), PrPA(3, 2),&
- PrGA(3), PrGB(3), PrE(3), PrH(3), PrGG(3)
+ PrGA(3), PrGB(3), PrE(3), PrH(3), PrGG(3), PrF(3,3)
 
 PA = 0
 nA = 0
@@ -15827,7 +16085,8 @@ do l=1,nSnp
             PrXV(x,y,:,:,:,1) = PrXV(x,y,:,:,:,1) * PrE(y)
           endif
      
-          PrE =  PrE * FSLik(y,:,l,Bj)
+          PrF = FSLik(l,Bj)
+          PrE =  PrE * PrF(:,y)
 
           if (any(catA == 2) .and. Parent(Bj,3-kB)/=0) then  ! kA==kB, share parent 3-kB
             do v = 1, nA
@@ -15962,6 +16221,7 @@ end subroutine ParentHFS
 subroutine DummyGP(SA, SB, kA, kB, focal, LL)  
 ! SB GP of SA? via observed or unobserved
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: SA, SB, kA, kB, focal
@@ -15969,7 +16229,7 @@ double precision, intent(OUT) :: LL
 integer :: i, r, AncB(2,mxA), Bi, AncBi(2, mxA), catA, catB, G(2), catG, &
   DoQuickA, DoQuickB, GGP(2), m, l, x, y, z, v, Ai, ix, e,f, Ei
 double precision :: LLGX(2,2), LLtmp(maxSibSize, 2), PrL(nSnp), PrZ(3), &
-  PrG(3), PrPG(3), PrXYZ(3,3,3,3,2), PrW(3), dx(maxSibSize), PrH(3)
+  PrG(3), PrPG(3), PrXYZ(3,3,3,3,2), PrW(3), dx(maxSibSize), PrH(3), PrF(3,3)
 logical :: MaybeGP(maxSibSize), ParAisClone(ns(SA,kA)), ParBisClone(ns(SB,kB))
 
 LL = missing
@@ -16155,7 +16415,8 @@ do m=1,2
                     if (Parent(Ei,kA) == -SA)  cycle
  !                   if (kA==kB .and. Parent(Ei,kB) == -SB)  cycle
                     call ParProb(l,Parent(Ei,kA),kA,Ei,-1,PrH) 
-                    PrH = PrH * FSLik(x,:,l,Ei)
+                    PrF = FSLik(l,Ei)
+                    PrH = PrH * PrF(:,x)
                     if (.not. all(PrH==1D0))  PrW(e) = PrW(e) * SUM(PrH)
                   enddo
                 enddo
@@ -16173,7 +16434,8 @@ do m=1,2
                 PrXYZ(x,y,z,:,1) = PrXYZ(x,y,z,:,1) * SUM(PrW)
               endif
               
-              PrW = PrW * FSLik(x,:,l,Ai)
+              PrF = FSLik(l,Ai)
+              PrW = PrW * PrF(:,x)
               
               if (catA==Ai) then
                 if (m==kA) then
@@ -16206,7 +16468,8 @@ do m=1,2
               PrXYZ(x,y,:,v,:) = PrXYZ(x,y,:,v,:) * SUM(AKA2P(y,v,:) * PrPG) 
             endif
             
-            PrW = PrW * FSLik(v,:,l, Bi)
+            PrF = FSLik(l,Bi)
+            PrW = PrW * PrF(:,v)
             PrXYZ(x,y,:,v,2) = PrXYZ(x,y,:,v,2) * SUM(PrW)
         
           else if (catG==0 .and. DoQuickB/=-3 .and. ns(SB,kB)>1) then
@@ -16239,7 +16502,8 @@ do m=1,2
                     if (Parent(Ei,kB) == -SB)  cycle
 !                    if (kA==kB .and. Parent(Ei,kA) == -SA)  cycle
                     call ParProb(l,Parent(Ei,kB),kB,Ei,-1,PrH) 
-                    PrH = PrH * FSLik(v,:,l,Ei)
+                    PrF = FSLik(l,Ei)
+                    PrH = PrH * PrF(:,v)
                     if (.not. all(PrH==1D0))  PrW(e) = PrW(e) * SUM(PrH)
                   enddo
                 enddo
@@ -16257,7 +16521,8 @@ do m=1,2
                 PrXYZ(x,y,:,v,1) = PrXYZ(x,y,:,v,1) * SUM(PrW)
               endif
               
-              PrW = PrW * FSLik(v,:,l,Bi) 
+              PrF = FSLik(l,Bi)
+              PrW = PrW * PrF(:,v) 
               
               if (catB==Bi .and. m==kB) then
                 do z=1,3
@@ -16293,12 +16558,13 @@ end subroutine DummyGP
 
 subroutine dummyHFA(SA,kA,SB,kB, hf, LL)   ! SB (not Bi's) is HA/FA of SA (not Ai's)
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: SA, kA, SB, kB, hf
 double precision, intent(OUT) :: LL
 integer :: i, r, AncB(2,mxA), m, DoQuickA, DoQuickB, l, x, y, z, u,v, Ai
-double precision :: PrL(nSnp), PrGG(3,2), PrGA(3), PrXY(3,3,3,3,3), PrA(3), PrPA(3)
+double precision :: PrL(nSnp), PrGG(3,2), PrGA(3), PrXY(3,3,3,3,3), PrA(3), PrPA(3), PrF(3,3)
 
 if (nS(SA,kA)==0 .or. ns(SB,kB)==0) then
   LL = NotImplemented
@@ -16358,8 +16624,9 @@ do l=1, nSnp
       exit
     enddo
     call ParProb(l, Parent(Ai,3-kA),3-kA, Ai, -1, PrPA)   ! excl Ai & all its FS
+    PrF = FSLik(l,Ai)
     do x=1,3
-      PrA(x) = SUM(FSLik(x,:,l,Ai) * PrPA)  
+      PrA(x) = SUM(PrF(:,x) * PrPA)  
     enddo
   else
     PrA = XPr(1,:,l,SA,kA) 
@@ -16406,7 +16673,11 @@ double precision, intent(OUT) :: BYLR(nYears)
 
 BYLR = LOG10(zero)
 if (A > 0) then
-  BYLR = IndBY(:, A, lvl)
+  if (BY(A) > 0) then
+    BYLR(BY(A)) = zero
+  else
+    BYLR = IndBY(:, A, lvl)
+  endif
 else if (A < 0) then
   BYLR = DumBY(:, -A, kA, lvl)
 endif
@@ -16539,13 +16810,15 @@ BYG = 10**BYG
 
 ! last possible BY based on parents' & GP's last year of reproduction
 Ylast = 999
-do m=1,2
-  if (Par(m) == 0)  cycle
-  if (Par(m) > 0)  Ylast = MIN(Ylast, YearLast( Par(m) ) )
-  do g=1,2
-    if (GP(g,m) > 0)  Ylast = MIN(Ylast, YearLast( GP(g,m) ) +MaxAgePO )  
+if (AnyYearLast) then
+  do m=1,2
+    if (Par(m) == 0)  cycle
+    if (Par(m) > 0)  Ylast = MIN(Ylast, YearLast( Par(m) ) )
+    do g=1,2
+      if (GP(g,m) > 0)  Ylast = MIN(Ylast, YearLast( GP(g,m) ) +MaxAgePO )  
+    enddo
   enddo
-enddo
+endif
 
 BYA = zero
 BYA(1,:) = LOG10(zero)  ! has parents --> cannot be born in year 1 
@@ -16849,7 +17122,7 @@ ALR = zero
 if (A==0 .or. B==0) then
   return  
 else if (A>0 .and. B>0) then
-  if (focal==1 .and. BY(A)>0) then
+  if (focal==1 .and. BY(A)>0 .and. AnyYearLast) then
     if (BY(A) > YearLast(B)) then  ! YearLast: unknown = +999
       ALR = impossible
       return
@@ -16950,9 +17223,9 @@ do n=1,2
     if (BYLR(y,2) < -HUGE(0.0D0)) cycle
     do x=1, nYears  ! A 
       if (BYLR(x,1) < -HUGE(0.0D0)) cycle
-      if (focal==1 .and. B>0) then
+      if (focal==1 .and. B>0 .and. AnyYearLast) then
         if (x > YearLast(B))  cycle  ! maybe-BY for A after B's last year of reproduction
-      else if (focal==4 .and. B>0) then
+      else if (focal==4 .and. B>0 .and. AnyYearLast) then
         if (x > (YearLast(B) +MaxAgePO))  cycle
       endif
       if ((x-y) < -MaxAgePO .or. (x-y) > nYears)  cycle
@@ -17160,22 +17433,25 @@ end subroutine BestRel2
 
 subroutine UpdateAllProbs
 use Global
+use CalcLik
 implicit none
 
 integer :: i, k, s, x, y, r, n=30, BYrankI(nInd), BYrankC(nInd/2,2)
 double precision :: Lind_IN(nInd)
 double precision, allocatable :: XPr_IN(:,:,:,:,:)
 
-allocate(XPr_IN(3,3,nSnp,nInd/2,2))          
+if (DoSibs) then
+  allocate(XPr_IN(3,3,nSnp,nInd/2,2))          
 
-do k=1,2
-  do s=1,nC(k)
-    if (nC(k)==0)  cycle
-    if (ALL(GpID(:,s,k)==0) .and. ALL(SibID(:,s,k)==0)) then
-      call Erstop("Empty sibship!", .TRUE.)
-    endif
+  do k=1,2
+    do s=1,nC(k)
+      if (nC(k)==0)  cycle
+      if (ALL(GpID(:,s,k)==0) .and. ALL(SibID(:,s,k)==0)) then
+        call Erstop("Empty sibship!", .TRUE.)
+      endif
+    enddo
   enddo
-enddo
+endif
 
 ! individuals ~~~~
 call getRank_i(BYrankI)
@@ -17198,210 +17474,53 @@ do r=1,2
 enddo
 
 ! sibships ~~~
-do k=1,2
-  call getBYrank_c(k, BYrankC(:,k))
-enddo
-
-do y=1,n  
-  do r=1,n
-    XPr_IN = XPr
-    do x=1, MAXVAL(nC)
-      do k=1,2
-        if (x > nC(k))  cycle
-        s = BYrankC(x,k)
-        call CalcCLL(s,k)
-      enddo
-    enddo
-    if (all(abs(XPr_IN - XPr) < 0.1))  exit
-  enddo
-  Lind_IN = Lind
-  do x=1, nInd
-    i = BYRankI(x)
-    call CalcLind(i)
-  enddo
-  if (all(abs(Lind_IN - Lind) < 0.1))   exit
-enddo
-
-do i=1, nInd
-  call CalcFSLik(i)
-enddo
-
-do x=1, MAXVAL(nC)
+if (DoSibs) then
   do k=1,2
-    if (x > nC(k))  cycle
-    s = BYrankC(x,k)
-    call setEstBY(-s, k)
+    call getBYrank_c(k, BYrankC(:,k))
   enddo
-enddo
 
-deallocate(XPr_IN)
+  do y=1,n  
+    do r=1,n
+      XPr_IN = XPr
+      do x=1, MAXVAL(nC)
+        do k=1,2
+          if (x > nC(k))  cycle
+          s = BYrankC(x,k)
+          call CalcCLL(s,k)
+        enddo
+      enddo
+      if (all(abs(XPr_IN - XPr) < 0.1))  exit
+    enddo
+    Lind_IN = Lind
+    do x=1, nInd
+      i = BYRankI(x)
+      call CalcLind(i)
+    enddo
+    if (all(abs(Lind_IN - Lind) < 0.1))   exit
+  enddo
+
+!  do i=1, nInd
+!    call CalcFSLik(i)
+!  enddo
+
+  do x=1, MAXVAL(nC)
+    do k=1,2
+      if (x > nC(k))  cycle
+      s = BYrankC(x,k)
+      call setEstBY(-s, k)
+    enddo
+  enddo
+
+  deallocate(XPr_IN)
+endif
 
 end subroutine UpdateAllProbs
 
 ! #####################################################################
 
-subroutine CalcLind(i)
+subroutine CalcCLL(s,k) 
 use Global
-implicit none
-
-integer, intent(IN) :: i
-integer :: nFSi, FSi(MaxSibSize), Inbr(2), Anc(2,mxA), PIK, l, x, y, k, z, j
-   !, nOff, Off(MaxSibSize), sxOff(MaxSibSize), r
-double precision :: PrL(nSnp), Px(3,2), PrG(3), PrXYZ(3,3,3), PrX(3) !, PrE(3)
-logical :: Selfed
-
-if (real(COUNT(Genos(:,i)/=-1)) < nSnp/20.0) then
-  return 
-endif
-
-nFSi = 1 
-FSi = 0                
-if (Parent(i,1)<0 .or. Parent(i,2)<0) then
-  nFSi = nFS(FSID(maxSibSize+1,i))
-  FSi = FSID(1:maxSibSize, FSID(maxSibSize+1,i))  
-endif
-
-! PO- and GP-mating
-Inbr = 0
-Anc = 0
-PIK = 0
-if (Parent(i,1)/=0 .and. Parent(i,2)/=0) then
-  call getAncest(i,1,Anc)
-  do k=1,2
-    if (Anc(3-k,5-k) == Parent(i,3-k)) then
-      Inbr(k) = 1
-      if (Parent(i,3-k)>0) then
-        PIK = Parent(i,3-k)
-      endif
-    endif
-  enddo
-endif
-
-Selfed = .FALSE.
-if (hermaphrodites/=0) then
-  if (Parent(i,1)==Parent(i,2) .and. Parent(i,1)>0) then
-    Selfed = .TRUE.
-  else if (all(Parent(i,:) < 0)) then
-    if (DumClone(-Parent(i,1),1) == -parent(i,2)) then  
-      Selfed = .TRUE.
-    endif
-  endif
-endif
-
-PrL = 0D0
-do l=1,nSnp
-  do k=1,2
-    call ParProb(l, Parent(i,k), k, i,-1, Px(:,k))
-    if (Inbr(k)==1) then
-      call ParProb(l, Anc(k,k+2), k, PIK,0, PrG)
-    endif
-  enddo
-  PrXYZ = 0D0
-  do y=1,3
-    do z=1,3
-      if (Selfed .and. y/=z)  cycle
-      if (ANY(Inbr==1)) then
-        do k=1,2
-          if (Inbr(k)==-1) then
-            PrXYZ(:,y,z) =AKA2P(:,y,z) * SUM(AKA2P(y,z,:)*PrG) *&
-             Px(y,k) * Px(z,3-k)
-          endif
-        enddo
-      else if (Selfed) then   
-        PrXYZ(:,y,y) = AKA2P(:, y, y) * Px(y,1)
-      else
-        PrXYZ(:,y,z) = AKA2P(:, y, z) * Px(y,1) * Px(z,2)
-      endif 
-      if (nFSi > 1) then
-        do j=1, nFSi
-          if (FSi(j) == i) cycle
-          PrXYZ(:,y,z) = PrXYZ(:,y,z) * OKA2P(Genos(l,FSi(j)),y, z)
-        enddo
-      endif
-    enddo
-  enddo
-
-  PrX = 0D0
-  if(SUM(PrXYZ) > 0D0) then  
-    do x=1,3
-      PrX(x) = SUM(PrXYZ(x,:,:))/SUM(PrXYZ)
-    enddo
-    PrX = PrX / SUM(PrX)
-  endif
-  PrX = OcA(Genos(l,i), :) * PrX
-  PrL(l) = LOG10(SUM(PrX))
-  LindX(:,l, i) = PrX
-  LindG(:, l, i) = PrX / SUM(PrX)  ! used in parprob
-  
-  ! if (all(LindX(:,l,i) == 0D0) .or. any(LindX(:,l,i) /= LindX(:,l,i))) then 
-    ! print *,""
-    ! print *, i, ", ", Parent(i,:), "Geno: ", Genos(l,i)
-    ! print *, "Inbr: ", any(Inbr==1), ", Selfed: ", SelfedIndiv(i), ", doFS: ", doFS
-    ! print *, ""
-    ! write(*, '(i3, " PrX: ", 3f5.2)') l, PrX
-    ! print *, ""
-    ! do k=1,2
-      ! write(*, '(i3, " Px: ", 3f5.2)') k, Px(:,k)
-    ! enddo
-    ! call ErStop("LL-ind error", .TRUE.)
-  ! endif
-  
-!  if (nOff > 2 .and. .not. Hermaphrodites) then
-!    do x=1,3   ! TODO inbred offspring
-!      do j=1, nOff
-!        if (nFS(Off(j)) == 0) cycle            
-!        call ParProb(l, Parent(Off(j), 3-sex(i)), 3-sex(i), Off(j), -1, PrE)
-!        do r=1, nFS(Off(j))
-!          if (Genos(l, FSID(r, Off(j)))==-9) cycle
-!          PrX(x) = PrX(x) * SUM(OKA2P(Genos(l,FSID(r, Off(j))), x, :) * PrE)
-!        enddo
-!      enddo
-!    enddo
-!  endif
-enddo
-Lind(i) = SUM(PrL)
-
-if (Lind(i)> 0D0 .or. Lind(i)/=Lind(i)  .or. Lind(i) < -HUGE(1D0) .or. &   
-  any(LindX(:,:,i)/=LindX(:,:,i)) .or. any(LindG(:,:,i)/=LindG(:,:,i))) then  
-  call Rprint("",(/i,Parent(i,:)/), (/0D0/), "INT")
-  if (any(LindX(:,:,i)/=LindX(:,:,i)))  call Rprint("LindX NA", (/0/), (/0D0/), "NON")
-  call Erstop("Invalid individual LL - try increasing Err", .FALSE.)
-endif
-
-end subroutine CalcLind
-
-! #####################################################################
-
-subroutine CalcFSLik(i)    ! FSLL: LL of FS set
-use Global
-implicit none
-
-integer, intent(IN) :: i
-integer :: j, l, x, y
-
-FSLik(:,:,:,i) = 1D0
-if (nFS(i)==0) return
-
-do l=1,nSnp
-  do j=1, nFS(i)
-    do y=1,3
-      do x=1,3
-        FSLik(x,y,l,i) = FSLik(x,y,l,i) * OKA2P(Genos(l,FSID(j,i)), x, y)
-      enddo
-    enddo
-  enddo
-enddo
-
-if (any(FSLik(:,:,:,i)/=FSLik(:,:,:,i)) .or. any(FSLik(:,:,:,i)>1.0D0))  then 
-  call Erstop("Invalid FS LL", .TRUE.)
-endif
-
-end subroutine CalcFSLik
-
-! #####################################################################
-
-subroutine CalcCLL(s, k) 
-use Global
+use CalcLik
 implicit none
 ! returns XPr: likelihood;  DumP: probability, scaled  (no age prior.),
 ! split into 1: sibs only 2: gp effect only, 3: all
@@ -17411,7 +17530,7 @@ integer :: Sibs(ns(s,k)), UseEE(ns(s,k)), MatePar(ns(s,k)),  cat, catG, &
   IsInbr(ns(s,k)), AncR(2,mxA), FSX, &
   l, x, i, Ei, r, y, z, g, Ri, v, e
 double precision :: PrL(nSnp), PrY(3), PrYp(3,ns(s,k)), PrGG(3,2),&
- PrZ(3),PrXZ(3,3,2), PrE(3), PrEE(3, ns(s,k)), LPrX(3,2)
+ PrZ(3),PrXZ(3,3,2), PrE(3), PrEE(3, ns(s,k)), LPrX(3,2), PrRF(3,3,ns(s,k)), PrF(3,3)
 logical :: ParIsClone(ns(s,k)), DoRsibs(maxSibSize)
 integer, allocatable :: HasInbr(:,:)
 
@@ -17536,6 +17655,7 @@ do l=1,nSnp
   LPrX = log10(SUM(PrXZ, DIM=2))  ! sum over z
 
   PrYp = 0D0
+  PrRF = 1D0
   do r=1, nS(s,k)
     Ri = Sibs(r)
     if (NFS(Ri) == 0) cycle
@@ -17546,6 +17666,7 @@ do l=1,nSnp
     else
       call ParProb(l, Parent(Ri, 3-k), 3-k, Ri, -1, PrYp(:,r)) 
     endif
+    if (all(HasInbr(r,:)==0)) PrRF(:,:,r) = FSLik(l,Ri)
   enddo
 
   do z=1,3
@@ -17581,7 +17702,8 @@ do l=1,nSnp
             if (NFS(Ei) == 0) cycle
             if (Parent(Ei, k) == -s) cycle
             call ParProb(l, Parent(Ei, k), k, Ei,-1, PrE)
-            PrE = PrE * FSLik(:,y,l,Ei)
+            PrF = FSLik(l,Ei)
+            PrE = PrE * PrF(:,y)
             if (.not. ALL(PrE==1D0))  PrY(y) = PrY(y) * SUM(PrE)
           enddo
         enddo
@@ -17607,7 +17729,7 @@ do l=1,nSnp
       endif
      
       if (all(HasInbr(r,:)==0)) then
-        PrY = PrY * FSLik(x,:,l,Ri)
+        PrY = PrY * PrRF(:,x,r)
       else
         do i=1, nFS(Ri)  ! default: nFS = 1    
           if (HasInbr(r,i)==0) then
@@ -17723,12 +17845,13 @@ end subroutine ChkTooManySibs
 
 subroutine ParProb(l, i, k, A, B, prob)  
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: l, i, k, A,B
 double precision, intent(OUT) :: prob(3)
 integer :: x,j, AB(2), A1, parA
-double precision :: PrP(3, 2), PrY(3)
+double precision :: PrP(3, 2), PrY(3), PrAF(3,3)
 logical :: AllIN
 
 prob = AHWE(:, l)    
@@ -17742,10 +17865,10 @@ if (i == 0) then  ! no parent
   endif
 
 else if (i > 0) then  ! real parent
-  if ((A==-4 .or. B==-4 .or. B==-5) .and. Lind(i)/=0) then
+  if ((A==-4 .or. B==-4 .or. B==-5)) then
     prob = OcA(Genos(l,i),:)
   else
-    prob = LindG(:, l, i)  ! =AHWE if Lind(i) not yet calculated
+    prob = LindX(:,l,i)  ! unscaled; scaled below.
   endif
 
 else if (i < 0) then  ! dummy parent
@@ -17776,7 +17899,8 @@ else if (i < 0) then  ! dummy parent
         if (Parent(AB(j), 3-k)==0) then  
           PrP(:,j) = AHWE(:,l)
         else if (Parent(AB(j), 3-k)>0) then
-          PrP(:,j) = LindG(:, l, Parent(AB(j), 3-k))
+          PrP(:,j) = LindX(:,l, Parent(AB(j), 3-k))
+          PrP(:,j) = PrP(:,j)/SUM(PrP(:,j))
         else if (Parent(AB(j), 3-k)<0) then  
           PrP(:,j) = DumP(:,l, -Parent(AB(j),3-k), 3-k)
         endif
@@ -17793,6 +17917,10 @@ else if (i < 0) then  ! dummy parent
       endif
    
       prob = 0D0
+      PrAF = 1D0
+      if ((B==-1 .and. .not. AllIN) .or. (B==-5 .and. nFS(A1) /= ns(-i,k))) then
+        PrAF = FSLik(l,A1)
+      endif
       do x = 1, 3
         if (B>=0) then    ! .or. (B==-1 .and. nFS(A1)<=1)
           prob(x) = XPr(3,x,l, -i, k)
@@ -17812,7 +17940,7 @@ else if (i < 0) then  ! dummy parent
           else if (AllIN) then
             prob(x) = XPr(2,x,l, -i, k)   ! GP only
           else
-            PrY = PrP(:,1) * FSLik(:,x,l,A1)
+            PrY = PrP(:,1) * PrAF(:,x)
             if (SUM(PrY) > 0D0)  prob(x) = XPr(3,x,l, -i, k) / SUM(PrY)
           endif     
         else if (B==-4) then ! exclude both GPs & A
@@ -17826,7 +17954,7 @@ else if (i < 0) then  ! dummy parent
           if (nFS(A1) == ns(-i,k)) then  ! ns(-i,k)==1 
             prob(x) = 1D0   ! AHWE(:,l)  !
           else
-            PrY = PrP(:,1) * FSLik(:,x,l,A1)
+            PrY = PrP(:,1) * PrAF(:,x)
             if (SUM(PrY) > 0D0)  prob(x) = XPr(1,x,l,-i,k) / SUM(PrY)   ! *AHWE(x,l)
           endif
         else
@@ -18052,7 +18180,8 @@ integer :: i, CurPar(2), k, m, nonG(6), CurGP(2), s, g
 double precision :: LLtmp(2,2,2), LLg(7), LLa(7)
 logical :: AllSibsSelfed(2), NoGP, FSM
 
-if (quiet < 1) print *, 'updating all probs ... '
+if (quiet < 1)  call timestamp()
+if (quiet < 1)  print *, 'updating all probs ... '
 call UpdateAllProbs()
 LLR_parent = missing
 LLR_GP = missing
@@ -18071,7 +18200,7 @@ do i = 1, nInd
   CurPar = Parent(i,:)
   do k=1,2
     if (curPar(k) <=0)  cycle
-    if (LLR_O(i,CurPar(k)) == Missing)  call CalcOppHom(i,CurPar(k))
+!    if (LLR_O(i,CurPar(k)) == Missing)  call CalcOppHom(i,CurPar(k))
   enddo
   
   do k=1,2  ! remove i from sibgroup
@@ -18288,6 +18417,7 @@ end subroutine setPar
 
 subroutine setParTmp(A, kA, P, kP)   ! Temporary assigns parent P to A
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, kA, P, kP
@@ -18331,8 +18461,8 @@ if (A > 0) then
         if (Parent(A,3-kP) == Parent(OffP(i), 3-kP)) then
           call MakeFS(A, OffP(i))
           call CalcLind(OffP(i))
-          call CalcFSLik(A)
-          call CalcFSLik(OffP(i))
+!          call CalcFSLik(A)
+!          call CalcFSLik(OffP(i))
         endif
       enddo
     endif
@@ -18376,6 +18506,7 @@ end subroutine setParTmp
 
 subroutine DoAdd(A, s, k)
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, s, k
@@ -18407,8 +18538,8 @@ do u=1, nS(s,k)  ! check for FS
   if (i==A .or. nFS(i)==0) cycle 
   if (Parent(A, 3-k)/=0 .and. Parent(A, 3-k)==Parent(i, 3-k)) then
     call MakeFS(A, i)
-    call CalcFSLik(A)
-    call CalcFSLik(i)
+!    call CalcFSLik(A)
+!    call CalcFSLik(i)
   endif
 enddo
 
@@ -18424,6 +18555,7 @@ end subroutine DoAdd
 
 subroutine RemoveSib(A, s, k)  ! removes individual A from sibship s. Does NOT drop sibship if ns=0
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, s, k
@@ -18460,6 +18592,7 @@ end subroutine RemoveSib
 
 subroutine UpdateLL(A, k)   ! update LL of A & if A<0 of its mates
 use Global
+use CalcLik
 implicit none
 
 integer, intent(IN) :: A, k
@@ -18571,7 +18704,7 @@ integer, intent(IN) :: A
 integer :: op, np, i, j
 
 if (nFS(A) == 1) then
-  call CalcFSLik(A)
+!  call CalcFSLik(A)
   return
 else if (nFS(A) > 1) then
   op = A
@@ -18602,9 +18735,9 @@ FSID(:,A) = 0
 FSID(1,A) = A
 FSID(maxSibSize+1, A) = A
 
-call CalcFSLik(op)  ! old primary
-call CalcFSLik(np)  ! new primary of no-longer-FS
-call CalcFSLik(A)
+!call CalcFSLik(op)  ! old primary
+!call CalcFSLik(np)  ! new primary of no-longer-FS
+!call CalcFSLik(A)
 
 end subroutine RemoveFS
 
@@ -18988,6 +19121,7 @@ NamePed = "NA"
 
 nIndP = FileNumRow(trim(FileName)) -1  ! 1st row = header
 
+if (quiet < 1)  call timestamp()
 if (quiet < 1)  print *, "Reading pedigree in "//trim(FileName)//" ... "
 open(unit=103, file=trim(FileName), status="old")
 read(103,*)   ! header                              
@@ -19268,6 +19402,7 @@ nrows = FileNumRow(trim(FileName))  ! no header
 skip = .TRUE.
 
 ! single column (ignore all other columns)
+if (quiet < 1)  call timestamp()
 if (quiet < 1)  print *, "Reading individuals in --only file "//trim(FileName)//" ... "
 open(unit=103, file=trim(FileName), status="old")
   do x=1, nrows
@@ -19309,6 +19444,7 @@ mtSame_temp = 1
 rownames = 'NA'
 colnames = 'NA'
 
+if (quiet < 1)  call timestamp()
 if (quiet < 1)  print *, "Reading mt similarity in "//trim(FileName)//" ... "
 
 open(unit=103, file=trim(FileName), status="old")
@@ -19414,19 +19550,19 @@ implicit none
 
 double precision, intent(IN) :: AP_IN(MaxMaxAgePO,5)
 integer, intent(INOUT) :: BYrange(nInd, 2)   ! OUT not used, but else not modifiable                                         
-integer :: i,j, BYLast, r, x, y, rik, rkj
+integer :: i, BYLast, r, x, y, rik, rkj
 double precision :: scl
 double precision, allocatable, dimension(:,:) :: BYP, APtmp
 
-allocate(AgeDiff(nInd,nInd))
-AgeDiff = 999
-do i=1, nInd
-  do j=1, nInd
-    if (BY(i)>=0 .and. BY(j)>=0) then
-      AgeDiff(i,j) = BY(i) - BY(j)   ! if >0, then j older than i
-    endif   
-  enddo
-enddo
+! allocate(AgeDiff(nInd,nInd))
+! AgeDiff = 999
+! do i=1, nInd
+  ! do j=1, nInd
+    ! if (BY(i)>=0 .and. BY(j)>=0) then
+      ! AgeDiff(i,j) = BY(i) - BY(j)   ! if >0, then j older than i
+    ! endif   
+  ! enddo
+! enddo
 
 !===  determine first & last possible birth year  ==============   
 BYzero = MINVAL(BY, MASK=BY>=0) -1   ! defaults to HUGE(ARRAY)
@@ -19536,36 +19672,42 @@ WHERE (BY >=0) BY = BY - BYzero
 do x=1,2
   WHERE (BYRange(:,x) >=0) BYRange(:,x) = BYRange(:,x) - BYzero
 enddo 
-WHERE(YearLast <= 0)  YearLast = 999                                    
-WHERE (YearLast /= 999)  YearLast = YearLast - BYzero
+if (AnyYearLast) then
+  WHERE(YearLast <= 0)  YearLast = 999                                    
+  WHERE (YearLast /= 999)  YearLast = YearLast - BYzero
 
-! min/max BY based on YearLast
-do i=1, nInd
-  if (YearLast(i)==999)  cycle
-  if (BYrange(i,1) < 0)  BYrange(i,1) = MAX(YearLast(i) - MaxAgePO, 1)
-  if (BYrange(i,2) < 0)  BYrange(i,2) = MIN(YearLast(i), nYears)
-enddo
+  ! min/max BY based on YearLast
+  do i=1, nInd
+    if (YearLast(i)==999)  cycle
+    if (BYrange(i,1) < 0)  BYrange(i,1) = MAX(YearLast(i) - MaxAgePO, 1)
+    if (BYrange(i,2) < 0)  BYrange(i,2) = MIN(YearLast(i), nYears)
+  enddo
+endif
 
 WHERE (BYRange(:,1) <0) BYrange(:,1) = 1
 WHERE (BYRange(:,2) <0) BYrange(:,2) = nYears 
 
 !===  Initiate indiv BY prob distr  ==============
-allocate(IndBY(nYears, nInd, 5))  ! year - indiv - own/wo/w dummy off+par
-IndBY = LOG10(1.0D0/nYears)
-do i=1, nInd  
-  if (BY(i) >0) then
-    IndBY(:, i, :) = LOG10(zero)
-    IndBY(BY(i), i, :) = zero  
-  else 
-    if (BYrange(i,1) < 1)  call ErStop('BY.min < 1', .TRUE.)
-    if (BYrange(i,2) > nYears)  call ErStop('BY.max > nYears', .TRUE.)                                                                                                                              
-    IndBY(:, i, :) = LOG10(zero)
-    IndBY(BYrange(i,1) : BYrange(i,2), i, :) = LOG10(1.0D0/(BYrange(i,2) - BYrange(i,1) +1))
-  endif
-enddo
+if (any(BY < 0)) then
+  allocate(IndBY(nYears, nInd, 5))  ! year - indiv - own/wo/w dummy off+par
+  IndBY = LOG10(1.0D0/nYears)
+  do i=1, nInd  
+    if (BY(i) >0) then
+      IndBY(:, i, :) = LOG10(zero)
+      IndBY(BY(i), i, :) = zero  
+    else 
+      if (BYrange(i,1) < 1)  call ErStop('BY.min < 1', .TRUE.)
+      if (BYrange(i,2) > nYears)  call ErStop('BY.max > nYears', .TRUE.)                                                                                                                              
+      IndBY(:, i, :) = LOG10(zero)
+      IndBY(BYrange(i,1) : BYrange(i,2), i, :) = LOG10(1.0D0/(BYrange(i,2) - BYrange(i,1) +1))
+    endif
+  enddo
+endif
 
-allocate(DumBY(1:nYears, nInd/2, 2,5)) 
-DumBY = 0D0
+if (DoSibs) then
+  allocate(DumBY(1:nYears, nInd/2, 2,5)) 
+  DumBY = 0D0
+endif
 
 call writeAgePrior  ! FOR CHECKING
 
@@ -19858,16 +20000,6 @@ enddo
 
 
 !=================
-allocate(PPO(-1:2,-1:2,nSnp))
-PPO = 1D0
-do l=1,nSnp
-  do i=0,2  ! obs offspring 
-    do j=0,2    ! obs parent
-      PPO(i,j,l) = OKOP(i,j,l) / OHWE(i,l)
-    enddo
-  enddo
-enddo
-
 allocate(PHS(-1:2,-1:2,nSnp))
 allocate(PFS(-1:2,-1:2,nSnp))
 PHS = 1D0
@@ -19889,15 +20021,19 @@ do l=1,nSnp
   enddo
 enddo
 
-allocate(LindG(3, nSnp, nInd))  ! used when missing genotype & at start
-allocate(DumP(3,nSnp, nInd/2,2))
-allocate(XPr(3,3,nSNP, nInd/2,2))
-XPr = 1D0
+allocate(LindX(3,nSnp,nInd))  ! used when missing genotype & at start
+if (DoSibs) then
+  allocate(DumP(3,nSnp, nInd/2,2))
+  allocate(XPr(3,3,nSNP, nInd/2,2))
+  XPr = 1D0
+endif
 do l=1,nSnp
-  do i=1,3
-    LindG(i,l,:) = AHWE(i,l)  
-    DumP(i,l,:,:) = AHWE(i,l)
-    XPr(2,i,l,:,:) = AHWE(i,l)  ! GP contribution
+  do h=1,3
+    LindX(h,l,:) = AHWE(h,l)  
+    if (DoSibs) then
+      DumP(h,l,:,:) = AHWE(h,l)
+      XPr(2,h,l,:,:) = AHWE(h,l)  ! GP contribution
+    endif
   enddo
 enddo
 
@@ -19927,6 +20063,7 @@ subroutine getAF(FileName, AF)
     enddo
   
   else
+    if (quiet ==-1)  call timestamp()
     if (quiet ==-1)  print *, "Reading allele frequencies in "//trim(FileName)//" ... "
   
     nCol = FileNumCol(trim(FileName))
@@ -20090,6 +20227,7 @@ end subroutine writeAgePrior
 
 subroutine deallocall
 use Global
+use OHfun
 implicit none
 
 ! same order as module Global; allocated in PrepData
@@ -20106,9 +20244,9 @@ if (allocated(Mate))  deallocate(Mate)
 if (allocated(YearLast)) deallocate(YearLast)
 
 if (allocated(Genos)) deallocate(Genos)
-if (allocated(AgeDiff)) deallocate(AgeDiff)
+!if (allocated(AgeDiff)) deallocate(AgeDiff)
 if (allocated(Parent)) deallocate(Parent)
-if (allocated(OppHomM)) deallocate(OppHomM)
+!if (allocated(OppHomM)) deallocate(OppHomM)
 if (allocated(nS)) deallocate(nS)
 if (allocated(FSID)) deallocate(FSID)
 if (allocated(DumMate))  deallocate(DumMate)
@@ -20120,13 +20258,13 @@ if (allocated(GpID)) deallocate(GpID)
 if (allocated(Lind)) deallocate(Lind)
 if (allocated(AHWE)) deallocate(AHWE)
 if (allocated(OHWE)) deallocate(OHWE) 
-if (allocated(LLR_O)) deallocate(LLR_O)
+!if (allocated(LLR_O)) deallocate(LLR_O)
 if (allocated(CLL)) deallocate(CLL)
 
 if (allocated(AKAP)) deallocate(AKAP)
 if (allocated(OKAP)) deallocate(OKAP)
 if (allocated(OKOP)) deallocate(OKOP)
-if (allocated(LindG)) deallocate(LindG)
+!if (allocated(LindG)) deallocate(LindG)
 if (allocated(PHS)) deallocate(PHS)
 if (allocated(PFS)) deallocate(PFS)
 if (allocated(PPO)) deallocate(PPO)
@@ -20136,7 +20274,7 @@ if (allocated(AgePriorA)) deallocate(AgePriorA)
 
 if (allocated(DumP)) deallocate(DumP)
 if (allocated(DumBY)) deallocate(DumBY)
-if (allocated(FSLik)) deallocate(FSLik)
+!if (allocated(FSLik)) deallocate(FSLik)
 if (allocated(XPr)) deallocate(XPr)
 
 if (allocated(Id)) deallocate(Id)

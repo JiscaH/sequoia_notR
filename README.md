@@ -6,8 +6,11 @@ Very large datasets can be incredibly slow or even impossible to load into R; th
 ## Compilation
 A Fortran compiler is needed, such as e.g. gfortran. In Windows you also need a linux emulator, e.g. cygwin (although other approaches may be possible).
 ```
-gfortran -std=f95 -fall-intrinsics -O3 Sequoia_SA.f90 -o sequoia
+gfortran -O3 Sequoia_SA.f90 -o sequoia
 ```
+
+(NOTE: previous versions relied on `-std=95 -fall-intrinsics`, these flags are no longer
+necessary and will in fact cause compilation to fail)
 
 
 ## File formats
